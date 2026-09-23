@@ -1,39 +1,44 @@
 <!--
 SYNC IMPACT REPORT
 ==================
-Versión: 1.1.0 (plantilla starter) → 1.2.0
+Versión: 1.2.0 → 1.3.0
 
 Cambios:
-  - Título y descripción del producto: Vocero CRM (CRM de WhatsApp con agente de
-    IA, open source MIT, self-hosted, gratuito; una instancia = un negocio).
-  - Principio II "Soberanía / Self-Hosted" → ENDURECIDO: se elimina la excepción
-    de almacenamiento de objetos S3-compatible; lista cerrada de dependencias
-    externas en runtime (WhatsApp Cloud API + proveedor LLM opcional vía
-    adaptador OpenRouter-compatible); prohibición explícita v1 de S3/R2, email,
-    Stripe y Google; requisitos mínimos del instalador fijados.
-  - Principio VIII "Foco Vertical" → definido: CRM de conversaciones y leads de
-    WhatsApp que las agencias despliegan para negocios.
-  - Principios I, III, IV, V, VI, VII y IX: íntegros (sin cambio semántico).
-  - Governance: Ratified / Last Amended = 2026-07-09.
+  - Preámbulo: el agente de IA puede ser propio o provisto por el transporte.
+  - Principio II "Soberanía / Self-Hosted" → EXPANDIDO: la dependencia 1 pasa a
+    ser "Transporte de WhatsApp" con modo dual (meta | kapso, uno por instancia);
+    la instancia se declara fuente de verdad; se admite el agente alojado en el
+    transporte (Hermes) con garantía de un solo agente; transparencia de datos
+    del modo kapso; requisitos del instalador actualizados.
+  - Restricciones de Plataforma: adaptador de transporte (Meta o Kapso); sandbox
+    "ni Meta ni Kapso"; KAPSO_API_KEY como secreto de instancia.
+  - Principio IV: aclaración sobre ecos de salientes (sin cambio semántico).
+  - Principios I, III, V, VI, VII, VIII y IX: íntegros.
+  - Governance: Last Amended = 2026-09-23.
 
-Bump: MINOR (1.1.0 → 1.2.0) — expansión material del Principio II y definición
-del Principio VIII; sin eliminaciones ni redefiniciones incompatibles.
+Bump: MINOR (1.2.0 → 1.3.0) — expansión material del Principio II; el modo
+meta vigente sigue cumpliendo sin cambios (compatible hacia atrás).
 
 Plantillas dependientes:
-  - .specify/templates/plan-template.md — ✅ compatible (Constitution Check
-    genérico; los gates se evalúan contra esta versión).
-  - .specify/templates/spec-template.md — ✅ compatible (sin secciones nuevas).
+  - .specify/templates/plan-template.md — ✅ compatible (Constitution Check genérico).
+  - .specify/templates/spec-template.md — ✅ compatible.
   - .specify/templates/tasks-template.md — ✅ compatible.
-  - CLAUDE.md — ⚠ se personaliza para el usuario final del repo en la fase de
-    implementación (tarea planificada de la feature 001).
+  - CLAUDE.md — ✅ reglas de Soberanía (transporte dual) y Sandbox ("ni Meta ni
+    Kapso"); ⚠ mapa del código y variables KAPSO_* se completan con cada fase.
+  - .env.example — ⚠ WHATSAPP_PROVIDER y KAPSO_* en F1; AGENT_ENGINE y
+    LAB_ENABLED en F3.
+  - docs de despliegue — ⚠ nota de transparencia de datos del modo kapso (F6).
 
 TODOs diferidos: ninguno.
+
+Historial previo: 1.1.0 → 1.2.0 (2026-07-09) — Principio II endurecido y
+Principio VIII definido.
 -->
 
 # Vocero CRM Constitution
 
-Vocero CRM es un CRM de WhatsApp con agente de IA, open source (MIT), self-hosted y
-gratuito, diseñado para que las agencias de IA lo desplieguen en el VPS de sus
+Vocero CRM es un CRM de WhatsApp con agente de IA (propio o provisto por el
+proveedor de transporte), open source (MIT), self-hosted y gratuito, diseñado para que las agencias de IA lo desplieguen en el VPS de sus
 clientes: una instancia = un negocio. Esta constitución define las reglas no
 negociables del producto. Aplica a todas las fases del flujo de trabajo (specify,
 plan, tasks, implement). Cualquier conflicto entre una decisión de implementación y
@@ -63,24 +68,48 @@ Vocero CRM opera completo sobre la infraestructura del operador. La lista de
 dependencias externas en runtime es CERRADA:
 
 - Dependencias externas permitidas en runtime, ÚNICAMENTE:
-  1. **WhatsApp Cloud API** (Meta Graph API) — el canal es la razón de ser del
-     producto.
+  1. **Transporte de WhatsApp**, UNO por instancia, elegido por configuración
+     (`WHATSAPP_PROVIDER`):
+     a. **WhatsApp Cloud API** (Meta Graph API) directa — modo `meta`, el
+        predeterminado y 100 % soberano; o
+     b. **Kapso** como proxy de la Cloud API — modo `kapso`: envío de mensajes,
+        recepción de eventos por webhook, descubrimiento de números/WABA y
+        control (pausa/reanudación) del agente alojado en Kapso.
   2. **El proveedor LLM**, opcional, accedido EXCLUSIVAMENTE a través del adaptador
      OpenRouter-compatible (`OPENROUTER_BASE_URL` / `OPENROUTER_MODEL`). Sin token
-     configurado, el producto funciona como CRM sin agente de IA.
+     configurado, el producto funciona como CRM sin agente de IA propio.
+- **La instancia es la fuente de verdad.** Mensajes (entrantes, salientes del
+  operador y del agente), estados, contactos, conversaciones, pipeline, notas y
+  handoff se persisten SIEMPRE en la base de datos propia de la instancia. El
+  transporte NO es fuente de verdad: la instancia no depende de leer historial en
+  vivo del proveedor para funcionar, y ante su caída solo se degradan los envíos.
+- **Agente alojado en el transporte.** En modo `kapso` el agente conversacional
+  puede residir en el proveedor (Hermes Agent). En ese caso el agente interno de
+  Vocero NO se ejecuta sobre conversaciones reales (garantía de un solo agente
+  respondiendo), y Vocero conserva el control de pausa/handoff por conversación.
+- **Transparencia de datos.** El modo `kapso` implica que el proveedor retiene su
+  propia copia de los mensajes; esto se documenta en la guía de despliegue para
+  que la agencia lo comunique al negocio. El modo `meta` no tiene esta exposición
+  adicional.
 - **PROHIBIDO en v1**: almacenamiento de objetos externo (S3/R2), servicios de
   email, Stripe u otro billing, y servicios de Google. Cualquier feature que los
-  requiera queda fuera del alcance de v1.
-- El instalador solo necesita: un VPS con Coolify o Docker, un dominio, credenciales
-  de Meta y (opcional) un token de OpenRouter. Nada más.
+  requiera queda fuera del alcance de v1. (La media recibida se guarda en
+  almacenamiento local de la instancia.)
+- El instalador solo necesita: un VPS con Coolify o Docker, un dominio,
+  credenciales de UN transporte de WhatsApp (credenciales de Meta, o una API key
+  de Kapso por instancia) y (opcional) un token de OpenRouter. Nada más.
 - Las funciones core —autenticación y base de datos— corren self-hosted (Better
   Auth + PostgreSQL propios de la instancia).
 - Las integraciones externas permitidas se aíslan tras adaptadores dedicados
-  (cliente Graph API propio; adaptador LLM) para no acoplar el dominio a ellas.
+  (cliente de transporte WhatsApp propio —único punto de salida hacia Meta o
+  Kapso—; adaptador LLM) para no acoplar el dominio a ellas.
 
 **Rationale**: El producto se regala para que agencias lo desplieguen en VPS de
 clientes; cada dependencia externa adicional es un costo, un punto de fallo y una
-fuga de soberanía que rompe la promesa "gratis y tuyo".
+fuga de soberanía que rompe la promesa "gratis y tuyo". Kapso se admite como
+alternativa de transporte —no como sustituto del CRM— porque simplifica la
+conexión de números y aporta un agente gestionado, siempre que los datos del
+negocio sigan viviendo en la instancia y el modo Meta directo siga disponible.
 
 ### III. Multi-Tenancy Real
 
@@ -104,7 +133,9 @@ terceros) se procesa de forma idempotente.
 
 - Recibir el mismo evento dos o más veces NO duplica efectos observables (mensajes
   reenviados, registros duplicados, acciones del agente repetidas).
-- Cada evento entrante se identifica de forma única (p. ej. `wa_message_id` UNIQUE)
+- Cada evento entrante se identifica de forma única (p. ej. `wa_message_id` UNIQUE,
+  también para los ecos de salientes que reenvía el proveedor de transporte, o la
+  clave de idempotencia del proveedor, como `X-Idempotency-Key`)
   y su procesamiento se registra para detectar y descartar reintentos.
 
 **Rationale**: Los proveedores externos reintentan entregas por diseño; sin
@@ -213,17 +244,21 @@ Estas restricciones derivan de los Principios I y II y son verificables en revis
 
 - **Gestión de secretos**: los secretos se inyectan vía configuración de entorno o un
   gestor de secretos; nunca se comprometen a control de versiones.
+  La API key del transporte (`KAPSO_API_KEY`) es un secreto de instancia: vive en
+  la configuración de entorno, jamás se expone al cliente ni a logs, y la UI solo
+  muestra sus últimos 4 caracteres.
 - **Cifrado en reposo**: credenciales y datos sensibles se almacenan cifrados; el
   almacenamiento en claro de secretos es una violación.
 - **Frontera de tenant**: la capa de acceso a datos exige el identificador
   de tenant; cualquier acceso que pueda omitirlo requiere justificación explícita.
 - **Aislamiento de integraciones**: las dependencias de APIs externas se acceden a
-  través de adaptadores dedicados (cliente Graph API propio, adaptador LLM
-  OpenRouter-compatible), no dispersas por el dominio.
+  través de adaptadores dedicados (cliente de transporte WhatsApp propio para
+  Meta o Kapso, adaptador LLM OpenRouter-compatible), no dispersas por el dominio.
 - **Instancia pública endurecida**: las rutas de mock/desarrollo devuelven 404
   incondicional en producción; el registro se cierra tras la primera organización
-  (salvo habilitación explícita); los entornos de prueba internos JAMÁS alcanzan la
-  API real de WhatsApp.
+  (salvo habilitación explícita); los entornos de prueba internos (Laboratorio,
+  conversaciones `is_test`) JAMÁS alcanzan un transporte real de WhatsApp —ni Meta
+  ni Kapso—; la aserción ocurre antes de resolver el transporte.
 
 ## Flujo de Desarrollo y Puertas de Calidad
 
@@ -260,4 +295,4 @@ práctica, convención o preferencia; ante un conflicto, gana la constitución.
 - **Propagación**: al enmendar la constitución se revisan y, si procede, se actualizan
   las plantillas dependientes (plan, spec, tasks).
 
-**Version**: 1.2.0 | **Ratified**: 2026-07-09 | **Last Amended**: 2026-07-09
+**Version**: 1.3.0 | **Ratified**: 2026-07-09 | **Last Amended**: 2026-09-23
