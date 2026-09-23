@@ -28,7 +28,7 @@ externas: el trabajo en segundo plano (agente, Laboratorio) es in-process.
 | El comportamiento/prompt del agente | `src/server/ai/prompts.ts` |
 | Las acciones que puede tomar el agente | `src/server/ai/actions.ts` + ejecución en `src/server/ai/pipeline.ts` |
 | Las personas o el juez del Laboratorio | `src/server/lab/personas.ts` · `src/server/lab/judge.ts` |
-| El canal WhatsApp (Graph API) | `src/lib/meta/` (cliente único) + `src/server/whatsapp/` |
+| El canal WhatsApp (Graph API directa o proxy Kapso) | `src/lib/meta/` (cliente único; resuelve el transporte por `WHATSAPP_PROVIDER`) + `src/server/whatsapp/` |
 | Campos/tablas | `src/lib/db/schema.ts` → `pnpm db:generate` → migración nueva en `drizzle/` |
 | La ingesta/envío de mensajes | `src/server/inbox/` (ingest idempotente, send con guard de sandbox, ventana 24h) |
 | UI | `src/components/` + `src/app/(app)/` |
@@ -41,18 +41,21 @@ producción.
 
 Ver [.specify/memory/constitution.md](.specify/memory/constitution.md).
 
-- **Soberanía (II, endurecida)**: dependencias de runtime SOLO WhatsApp Cloud
-  API + proveedor LLM OpenRouter-compatible opcional. PROHIBIDO en v1
-  introducir S3/R2, email, Stripe, Google u otros servicios externos. Auth y
-  BD self-hosted.
+- **Soberanía (II, v1.3.0)**: dependencias de runtime SOLO un transporte de
+  WhatsApp —Meta Cloud API directa (`WHATSAPP_PROVIDER=meta`, default) o Kapso
+  como proxy (`WHATSAPP_PROVIDER=kapso`)— + proveedor LLM OpenRouter-compatible
+  opcional. La BD de la instancia es la fuente de verdad (nunca se lee historial
+  en vivo del transporte). PROHIBIDO en v1 introducir S3/R2, email, Stripe,
+  Google u otros servicios externos. Auth y BD self-hosted.
 - **Seguridad (I)**: secretos cifrados en reposo (AES-256-GCM, `lib/crypto`);
   jamás al cliente ni a logs. El token de WhatsApp solo muestra sus últimos 4.
 - **Multi-tenancy (III)**: `organization_id` NOT NULL en toda tabla de dominio;
   toda query pasa por `scoped()` de `src/lib/db/tenant.ts`.
 - **Idempotencia (IV)**: webhooks dedup por `wa_message_id` UNIQUE; estados
   monotónicos; seeds y migraciones re-ejecutables.
-- **Sandbox del Laboratorio**: las conversaciones `is_test` JAMÁS tocan la API
-  real — el sender lanza excepción (no lo "arregles": es un guardrail).
+- **Sandbox del Laboratorio**: las conversaciones `is_test` JAMÁS tocan un
+  transporte real (ni Meta ni Kapso) — el sender lanza excepción antes de
+  resolver el transporte (no lo "arregles": es un guardrail).
 
 ## Variables de entorno
 

@@ -1,7 +1,7 @@
 # Plan: Kapso como transporte de WhatsApp en Vocero
 
-> Estado: **propuesta v2 para revisión**. Solo análisis; no hay código de la app
-> cambiado. Esta versión incorpora las decisiones del dueño (§0.1).
+> Estado: **v3 aprobada**. F0 completada (constitución 1.3.0) y F1 en curso.
+> Incorpora las decisiones del dueño (§0.1) y lo verificado en docs.kapso.ai (§8).
 > Enmienda de la constitución que la habilita:
 > [`docs/ENMIENDA-constitucion-II-kapso.md`](./ENMIENDA-constitucion-II-kapso.md).
 >
@@ -41,6 +41,9 @@
 | D4 | Sin migración de historial: la instancia Kapso arranca nueva y vacía. |
 | D5 | Kapso es solo transporte. La persistencia es local y permanente, y no hay lectura en vivo desde Kapso. |
 | D6 | El agente es Hermes (en Kapso). El agente interno de Vocero queda desactivado. |
+| D7 | Multimedia: descarga inmediata al recibir, tope de 20 MB por archivo (lo mayor se registra como no guardado, con sus metadatos), retención de 12 meses configurable y uso del volumen en las alertas. |
+| D8 | El Laboratorio queda oculto con `LAB_ENABLED=false` hasta F7. |
+| D9 | Chat nuevo: número predeterminado preseleccionado + selector. Fuera de la ventana de 24 h solo se permite plantilla (forzado en la UI). |
 
 ---
 
@@ -70,7 +73,7 @@ Hallazgos del SDK que simplifican el plan:
   (`x-hub-signature-256`). Marca los ecos de envíos del negocio con
   `kapso.source = "smb_message_echo"` y la dirección con `kapso.direction`. Si
   Kapso reenvía a Vocero ese formato, la ruta de webhook actual se reutiliza casi
-  entera. Está en *pendiente de verificar* (§8).
+  entera. **Confirmado**: webhook `kind=meta` (§8.1).
 - Meta está migrando a **BSUID** (business-scoped user IDs, `US.1349…`). Para
   usuarios con *username*, el teléfono puede dejar de llegar. Esto impacta la
   clave teléfono de D3 (ver §7).
@@ -131,7 +134,7 @@ agrega `THIRD_PARTY_NOTICES.md` con el texto completo de la licencia.
 | `src/server/whatsapp/credentials.ts` + `meta_credentials` | **Se adapta** a `whatsapp_number` (varios por organización). En `meta`, cada número guarda su token cifrado. En `kapso` no hay token por número (la key es de instancia, D2). | `inbox-settings.ts` (descubrimiento de números) |
 | `src/server/whatsapp/connect.ts` | **Se adapta**: en `kapso`, "probar conexión" consulta `GET /platform/v1/whatsapp/phone_numbers`, y `subscribeAppToWaba` no aplica. En `meta` no cambia. | `fetchKapsoPhoneNumbers` |
 | `components/settings/whatsapp-wizard.tsx` + `api/settings/whatsapp/*` | **Se adapta**: en `kapso`, lista los números de la cuenta y el operador marca cuáles atiende la organización y cuál es el predeterminado. Se guarda **en BD**, no en cookie. | `app/settings/page.tsx` (solo como idea de UX) |
-| `app/api/webhooks/wa/[webhookToken]/route.ts` + `server/inbox/webhook.ts` | **Se reutiliza o adapta**. Si Kapso reenvía el formato de Meta, es la misma ruta con otro secreto de firma (`KAPSO_WEBHOOK_SECRET`). Si envía eventos propios de Kapso, se crea la ruta `/api/webhooks/kapso/[token]` con un normalizador a `WebhookValue`. | `normalizeWebhook`, `verifySignature` (SDK `/server`) |
+| `app/api/webhooks/wa/[webhookToken]/route.ts` + `server/inbox/webhook.ts` | **Se reutiliza** con el webhook `kind=meta` de Kapso (payload crudo de Meta). Se agrega la capa de firma `X-Webhook-Signature` (`KAPSO_WEBHOOK_SECRET`) y la dedup por `X-Idempotency-Key` (`inbound_event`). Solo si los ecos de Hermes no llegan por `kind=meta`, se crea `/api/webhooks/kapso/[token]` para `whatsapp.message.sent`. | Webhooks por número (`POST /platform/v1/whatsapp/phone_numbers/{id}/webhooks`) |
 | `server/inbox/ingest.ts` | **Se adapta**: la persistencia sigue **permanente**. Además ingiere **salientes ajenos** (respuestas de Hermes y ecos `smb_message_echo`) como `direction='out'` con su `origin`. La conversación y el lead se resuelven por (`phone_number_id`, teléfono). Guarda metadatos de media. **No** llama `maybeRunAgentTurn` en modo Hermes. | — |
 | `server/inbox/status.ts` | **Se mantiene** (estados monotónicos desde los `statuses` del webhook de Kapso). | — |
 | `server/inbox/send.ts` | **Se adapta**: envía por `conversation.phone_number_id` a través de `graphRequest` con el transporte activo. Conserva la aserción del sandbox y la ventana de 24 h en el servidor. Guarda `origin='operator'`. | `api/messages/send` (forma del payload) |
@@ -192,6 +195,7 @@ Reglas:
 | `lead` | Se agrega `conversation_id` NOT NULL con UNIQUE. Se elimina `lead_contact_uq` y se conserva `contact_id` para los joins. `onLeadActivity(org, conversationId)`. |
 | `message` | **Permanente**. Se agregan: `origin` (`contact`\|`operator`\|`hermes`\|`echo`\|`vocero_ai`\|`template`), que reemplaza a `ai_generated`; `media_id`, `media_mime`, `media_filename`, `media_caption`, `media_path` (archivo local) y `context_wa_message_id`. `wa_message_id` sigue siendo UNIQUE: es la dedup de entrantes y de ecos de salientes, incluido el eco de un envío propio que ya existe. |
 | `template` | Se agrega `waba_id`. El único pasa a ser (`organization_id`, `waba_id`, `name`, `language`). |
+| **`inbound_event`** (nueva) | `id`, `organization_id` NOT NULL (resuelta por el `phone_number_id` del payload antes de insertar; si el número es desconocido, el evento se descarta), `idempotency_key` UNIQUE (`X-Idempotency-Key`), `received_at`. Se inserta antes de procesar y se purga a los 30 días. |
 | `meta_credentials` | Se reemplaza por `whatsapp_number`. En una instancia `meta` existente, una migración idempotente copia las filas. La tabla se elimina en F6. |
 
 Todas llevan `organization_id NOT NULL` y se consultan con `scoped()`.
@@ -200,7 +204,7 @@ Todas llevan `organization_id NOT NULL` y se consultan con `scoped()`.
 descargan por el proxy (`GET /{media_id}?phoneNumberId=`) al **volumen local**
 (`MEDIA_DIR`, volumen Docker) durante la ingesta, en segundo plano y con
 reintentos. Se sirven solo por la ruta autenticada. Queda abierta la retención
-por tamaño (§9).
+según D7 (20 MB por archivo, 12 meses).
 
 ---
 
@@ -242,43 +246,46 @@ licencia MIT cubre el código, no el uso del servicio.
 |---|---|
 | Kapso guarda su propia copia de los mensajes (el proxy y el inbox la exponen). La promesa de "tus datos en tu VPS" deja de ser exclusiva. | Documentarlo en el deploy y ante el cliente final. En modo `meta` no aplica. Lo recoge la enmienda. |
 | Respuesta doble (Hermes + agente interno) | `AGENT_ENGINE=hermes` fuerza el apagado para conversaciones reales, con test unitario y E2E ("entra un mensaje → Vocero no envía nada"). |
-| Kapso solo admite una suscripción de webhook por número | Pendiente de verificar (§8). Alternativa: que Vocero reciba y reenvíe a Hermes (relay firmado), o al revés. Cualquiera añade un salto y un punto de fallo. |
+| Firma de Kapso sin timestamp: se pueden reenviar eventos | Idempotencia obligatoria por `X-Idempotency-Key` (`inbound_event`) + `wa_message_id` UNIQUE (§8.1). |
 | Pausa de Hermes no confirmada (fallo de red) | Se guarda la pausa local de inmediato, `bot_paused_synced_at` NULL significa "pendiente", hay reintentos y la UI muestra el estado real, como hoy hace la bandeja con la IA. |
 | BSUID: con el tiempo el teléfono deja de llegar | Guardar `wa_user_id` desde ya. Si llega un evento sin teléfono, buscar por `wa_user_id`. Hay que revisar D3 cuando Meta lo generalice. |
 | Formato del webhook de Kapso distinto al de Meta | Normalizador dedicado + fixtures reales + tests unitarios de `ingest`. |
 | Ecos duplicados de envíos propios | `wa_message_id` UNIQUE: el eco de un envío que ya se guardó solo actualiza el estado. |
-| Disco por media local | `MEDIA_DIR` en volumen, con límite de tamaño por archivo y retención configurable (§9). |
+| Disco por media local | `MEDIA_DIR` en volumen, con límite de tamaño por archivo y retención configurable (D7, F5). |
 | Port de UI (Tailwind 4 → 3, sin Radix) | Re-estilizar con primitivas propias, sin agregar Radix salvo que haga falta (decisión en F5). |
 | El Laboratorio evalúa el agente interno, no Hermes | Mostrar un aviso claro en la UI hasta F7. |
 | Webhooks de plantillas (`message_template_status_update`) | Si Kapso no los reenvía, sincronizar bajo demanda (`syncTemplates`, que ya existe). |
 
 ---
 
-## 8. Pendiente de verificar (docs o soporte de Kapso)
+## 8. Verificación contra docs.kapso.ai
 
-1. **Varias suscripciones de webhook por número**: ¿admite Kapso más de un
-   destino por `phone_number_id` (o por proyecto), para que **Hermes y Vocero
-   reciban eventos en paralelo sin relay**? Si no, ¿cuál es el patrón
-   recomendado?
-2. **Formato y firma del webhook hacia Vocero**: ¿reenvía el payload de Meta
-   (`x-hub-signature-256`, que `normalizeWebhook` y `verifySignature` ya cubren)
-   o eventos propios (`whatsapp.message.received`, `…sent`, etc., con otro
-   header de firma)? ¿Hay reintentos? ¿Hay un id de evento para la dedup?
-3. **Salientes de Hermes en el webhook**: ¿llegan los mensajes que envía Hermes
-   (o `smb_message_echo`) con un campo que permita marcarlos como
-   `origin='hermes'`?
-4. **Pausar y reanudar Hermes por conversación** desde una API (¿`conversations.update`?,
-   ¿metadata?, ¿endpoint de Hermes?). Y **cómo notifica Hermes un escalado a
-   humano** (evento o webhook), para que Vocero registre el handoff.
-5. **Plantillas por el proxy**: ¿se admite `POST {waba_id}/message_templates`
-   (crear) y el webhook `message_template_status_update`?
-6. **Media por el proxy**: subida multipart (`POST {phone_number_id}/media`),
-   descarga (`?phoneNumberId=`) y caducidad de las URLs.
-7. **Laboratorio ↔ Hermes (futuro)**: ¿expone Hermes un modo de prueba o sandbox
-   (invocar un turno sin enviar a WhatsApp) para que el Laboratorio lo evalúe?
-8. **Acciones de Hermes sobre el CRM (futuro)**: ¿puede Hermes llamar
-   herramientas HTTP (mover de etapa, agregar nota) contra una API de Vocero con
-   token?
+### 8.1 Resuelto (verificado por el dueño, 2026-09-23)
+
+| # | Pregunta | Resultado | Impacto en el plan |
+|---|---|---|---|
+| P1 | ¿Varias suscripciones de webhook por número? | **Sí.** Se registran por número con `POST /platform/v1/whatsapp/phone_numbers/{id}/webhooks`, y se pueden tener varias. | Hermes conserva su webhook en formato Kapso y Vocero registra **otro** propio. No hace falta relay. |
+| P2 | ¿Formato del webhook? | Hay dos tipos: **formato Kapso** (eventos, con buffering) y **`"kind": "meta"`** (payload crudo de Meta + header `X-Idempotency-Key`). | Vocero registra uno `kind=meta` hacia su ruta **actual** `/api/webhooks/wa/[token]`. Se **reutiliza la ingesta existente** (`processMessagesValue`) y F3 se reduce. |
+| — | Firma | HMAC-SHA256 del body crudo en `X-Webhook-Signature`, **sin timestamp**, así que no protege contra reenvíos. | Nueva capa de firma con `KAPSO_WEBHOOK_SECRET`, más **idempotencia obligatoria** por `X-Idempotency-Key` en la tabla `inbound_event`, además del `wa_message_id` UNIQUE que ya existe. |
+| — | BSUID | Confirmado: `business_scoped_user_id`. | Se mantiene `contact.wa_user_id` en el modelo (§5). |
+
+### 8.2 Parcial
+
+| # | Pregunta | Estado | Plan |
+|---|---|---|---|
+| P3 | ¿Llegan los salientes de Hermes? | Existe el evento `whatsapp.message.sent` (formato Kapso). **Falta confirmar** si el webhook `kind=meta` trae los ecos de lo que envía Hermes (`smb_message_echoes` o similar). | Primero probarlo con un número real en F3. **Si no llegan**, Vocero registra un **segundo** webhook en formato Kapso solo con `whatsapp.message.sent` hacia `/api/webhooks/kapso/[token]`, con un normalizador mínimo y dedup por `X-Idempotency-Key` y `wa_message_id`. |
+
+### 8.3 Pendiente
+
+4. **Pausar y reanudar Hermes por conversación** desde la API, y cómo notifica
+   Hermes un escalado a humano. **Bloquea F4.**
+5. **Plantillas por el proxy**: crear (`POST {waba_id}/message_templates`) y el
+   webhook `message_template_status_update` en `kind=meta`. Si no están, se
+   sincroniza bajo demanda con `syncTemplates`, que ya existe.
+6. **Media por el proxy**: subida multipart y descarga (`?phoneNumberId=`). Se
+   valida en F5 con el mock y luego con un número real.
+7. **Laboratorio ↔ Hermes** (F7): ¿existe un modo de prueba de Hermes?
+8. **Herramientas de Hermes sobre el CRM** (F7).
 
 ---
 
@@ -289,81 +296,105 @@ licencia MIT cubre el código, no el uso del servicio.
 > `specs/`. Con `WHATSAPP_PROVIDER=meta` (valor por defecto) ninguna fase
 > cambia el comportamiento actual.
 
-**F0: decisiones y verificación** (sin código de la app)
-- ✅ Decisiones D1–D6.
-- Aprobar y aplicar la enmienda del Principio II (1.2.0 → 1.3.0).
-- Resolver §8.1–§8.4 con la documentación o el soporte de Kapso. **Bloquean F3
-  y F4.**
-- Crear `specs/00X-kapso-transporte/` (spec, plan, tasks).
+**F0: decisiones y constitución** ✅
+- Decisiones D1–D9 (§0.1).
+- Enmienda del Principio II **aprobada y aplicada** (constitución 1.3.0,
+  propagada a `CLAUDE.md`).
+- P1, P2 y la firma resueltos (§8.1).
 
-**F1: transporte dual** (salida)
-- `graphRequest` parametrizado por transporte, con las variables `KAPSO_*`
-  (placeholders `REEMPLAZA_...` en `.env` y guía en `.env.example`).
-- El mock responde como proxy de Kapso.
-- Envío de texto y plantillas por Kapso.
-- E2E: con `WHATSAPP_PROVIDER=kapso`, operador envía → el mock recibe
-  `X-API-Key` → `message` queda guardado. El sandbox sigue lanzando excepción.
+**F1: transporte dual (salida)**
+- `WHATSAPP_PROVIDER=meta|kapso`, `KAPSO_API_KEY`, `KAPSO_WHATSAPP_API_URL`,
+  `KAPSO_API_BASE_URL`, validadas con Zod (en modo `kapso` la API key es
+  obligatoria).
+- `graphRequest` resuelve el transporte:
+  - `meta` → `graph.facebook.com` + `Bearer <token>`;
+  - `kapso` → proxy + `X-API-Key`.
+  Sigue siendo el único punto de salida.
+- Conexión en modo `kapso`:
+  - el wizard pide WABA ID y Phone Number ID, **sin token**;
+  - "probar conexión" valida que el número exista en la cuenta con
+    `GET /platform/v1/whatsapp/phone_numbers`;
+  - no llama a `subscribed_apps`.
+- Migración mínima: `meta_credentials.provider` y columnas del token
+  **nullable**. En modo `meta`, una conexión sin token da `not_connected`.
+- Errores de auth en `kapso` (API key inválida): mensaje propio, sin marcar
+  `reconnect_required`, porque la key vive en `.env`.
+- El mock acepta `X-API-Key`, registra el tipo de auth en el outbox y expone
+  `/platform/v1/whatsapp/phone_numbers`.
+- E2E: con `WHATSAPP_PROVIDER=kapso`:
+  - wizard sin token → conectado;
+  - entrante simulado → el operador responde → el mock recibe `X-API-Key` y el
+    mensaje queda guardado;
+  - key `-invalid` → error claro sin colgarse;
+  - una conversación `is_test` sigue lanzando excepción.
 
 **F2: multi-número y modelo de datos**
 - Migraciones:
-  - `whatsapp_number`, con copia idempotente desde `meta_credentials`;
+  - `whatsapp_number` (reemplaza a `meta_credentials`, con copia idempotente);
   - `conversation.phone_number_id` y el nuevo único parcial;
-  - `lead.conversation_id`;
+  - `lead.conversation_id` UNIQUE;
   - `template.waba_id`;
-  - `contact.wa_user_id`;
+  - `contact.wa_user_id` (BSUID);
   - `message.origin` y columnas de media.
-- Configuración → WhatsApp: en `kapso`, descubrir los números
-  (`/platform/v1/whatsapp/phone_numbers`) y elegir el predeterminado; en `meta`,
-  el wizard actual.
+- Configuración → WhatsApp (`kapso`): descubrir los números, marcar cuáles
+  atiende la organización y cuál es el predeterminado.
 - El envío sale por el número de la conversación. La bandeja tiene filtro y
   etiqueta de número.
+- **Chat nuevo** (D9):
+  - el número predeterminado viene preseleccionado, con un selector para
+    cambiarlo;
+  - fuera de la ventana de 24 h, o sin entrantes, **solo plantilla**. Lo fuerza
+    la UI y también el servidor (`window_closed`).
 
-**F3: ingesta permanente de webhooks de Kapso** (requiere §8.1–§8.3)
-- Ruta de webhook (reutilizada o nueva, según §8.2) con firma y
-  `KAPSO_WEBHOOK_SECRET`.
-- Entrantes, salientes de Hermes y ecos, y estados, con dedup por
-  `wa_message_id`. Con cada evento: contacto, conversación, lead y SSE.
-- `AGENT_ENGINE=hermes`: el agente interno queda apagado para conversaciones
-  reales, y la página de Agente muestra el aviso.
-- E2E: entrante firmado → aparece en la bandeja y el pipeline → Vocero no envía
-  nada. Llega el eco de Hermes → se muestra como "Hermes". Un webhook repetido
-  no tiene efectos.
+**F3: ingesta de Kapso por el webhook actual** (reducida gracias a P1 y P2)
+- En Kapso se registra un webhook `kind=meta` por número hacia
+  `/api/webhooks/wa/[token]`. Puede hacerse desde Configuración, con
+  `POST /platform/v1/whatsapp/phone_numbers/{id}/webhooks`, o a mano.
+- En la ruta actual:
+  - capa de firma `X-Webhook-Signature` (HMAC-SHA256, `KAPSO_WEBHOOK_SECRET`)
+    en modo `kapso`;
+  - tabla `inbound_event` (`idempotency_key` UNIQUE, `received_at`, purgable),
+    que se inserta **antes** de procesar: si la key ya existe, se responde 200
+    sin efectos.
+- `processMessagesValue` sin cambios de fondo. Solo se agregan la resolución
+  por (`phone_number_id`, teléfono) de F2 y el guardado de
+  `business_scoped_user_id`.
+- `AGENT_ENGINE=hermes` (valor por defecto con `kapso`): el agente interno no
+  se ejecuta en conversaciones reales. `LAB_ENABLED=false`: el Laboratorio se
+  oculta de la navegación y su API responde 404 (D8).
+- Ecos de Hermes (P3): confirmar con un número real. Si no llegan, agregar el
+  segundo webhook `whatsapp.message.sent` (§8.2).
+- E2E:
+  - entrante `kind=meta` firmado → aparece en la bandeja y el pipeline, y
+    Vocero **no** responde;
+  - el mismo `X-Idempotency-Key` repetido no tiene efectos;
+  - firma inválida → 401;
+  - eco de Hermes → se muestra como "Hermes".
 
-**F4: handoff = pausa de Hermes** (requiere §8.4)
+**F4: handoff = pausa de Hermes** (requiere P4)
 - Toggle "Bot activo / Pausado" y "Tomar conversación" → API de Kapso, con
-  reintentos y estado sincronizado.
-- El escalado iniciado por Hermes se registra como `handoff_reason='modelo'` o
-  `'cliente'`.
-- E2E: pausar → el mock registra la pausa. Fallo de red → la UI muestra
-  "pendiente" y no se cuelga.
+  reintentos y estado sincronizado (`bot_paused_synced_at`).
+- Escalado de Hermes → `handoff_reason`.
 
-**F5: UI portada de Kapso**
-- Multimedia:
-  - recepción con descarga a `MEDIA_DIR` y ruta autenticada;
-  - envío con subida por el proxy.
-- Botones interactivos.
-- Plantillas con parámetros de HEADER, BODY y BUTTON.
-- Todos con aviso de copyright y `THIRD_PARTY_NOTICES.md`.
+**F5: UI portada de Kapso + multimedia**
+- Componentes de multimedia, botones y plantillas (HEADER, BODY, BUTTON), con
+  aviso de copyright y `THIRD_PARTY_NOTICES.md`.
+- Media entrante (D7):
+  - descarga **inmediata** al recibir, en segundo plano con reintentos, a
+    `MEDIA_DIR` (volumen local);
+  - tope de **20 MB por archivo** (`MEDIA_MAX_BYTES`); lo que lo supera se
+    registra con sus metadatos y `media_status='too_large'`, sin binario;
+  - retención de **12 meses** configurable (`MEDIA_RETENTION_DAYS=365`), con
+    purga diaria in-process;
+  - **uso del volumen** reportado en `/api/health` y en las alertas del deploy.
+- Media saliente: subida por el proxy.
 
 **F6: limpieza** (reducida)
-- Eliminar `meta_credentials` (ya reemplazada por `whatsapp_number`) y el uso
-  restante de `ai_generated`.
-- Actualizar `CLAUDE.md` (mapa del código, variables, regla del sandbox "ni Meta
-  ni Kapso"), `.env.example` y los documentos de deploy.
-- El proveedor `meta` y su webhook **se mantienen** (modo dual).
+- Eliminar `meta_credentials` (ya reemplazada) y `ai_generated`.
+- Actualizar `CLAUDE.md` (mapa del código y variables), `.env.example` y los
+  documentos de deploy.
+- El proveedor `meta` se mantiene (modo dual).
 
 **F7: futuro, Hermes ↔ Vocero** (fuera de este alcance)
-- Laboratorio contra Hermes (§8.7).
-- Herramientas de Hermes sobre el CRM (§8.8), con una API de Vocero con token y
-  `scoped()`.
-
----
-
-## 10. Preguntas abiertas restantes
-
-1. **Media local**: ¿límite de tamaño y retención (p. ej. 90 días o sin
-   límite)? ¿Se descarga siempre o solo al abrir la media (bajo demanda)?
-2. **Laboratorio hasta F7**: ¿se deja visible con aviso ("evalúa el agente
-   interno, no Hermes") o se oculta?
-3. **Número predeterminado para chats nuevos** (plantilla a un contacto sin
-   conversación): ¿el marcado `is_default` o que el operador elija siempre?
+- Laboratorio contra Hermes (se reactiva `LAB_ENABLED`).
+- Herramientas de Hermes sobre el CRM.

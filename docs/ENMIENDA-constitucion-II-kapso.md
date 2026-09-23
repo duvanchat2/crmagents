@@ -1,9 +1,8 @@
 # Propuesta de enmienda de la constitución: Principio II y Kapso como transporte
 
-> **Estado**: borrador para aprobación del responsable del proyecto
-> (Governance → "Procedimiento de enmienda").
-> **Destino**: `.specify/memory/constitution.md`. Todavía **no** se ha aplicado:
-> se aplica en F0 del [plan](./PLAN-kapso-inbox.md), una vez aprobada.
+> **Estado**: ✅ **aprobada** por el responsable del proyecto el 2026-09-23 y
+> **aplicada** a `.specify/memory/constitution.md` (F0 del [plan](./PLAN-kapso-inbox.md)).
+> Este archivo queda como registro de la propuesta y su motivación.
 > **Versión**: 1.2.0 → **1.3.0** (MINOR: expansión material del Principio II,
 > sin eliminar ni redefinir de forma incompatible ningún principio).
 
@@ -120,7 +119,8 @@ por:
 
 Se añade al ejemplo de identificación única:
 > (p. ej. `wa_message_id` UNIQUE, también para los ecos de salientes que reenvía
-> el proveedor de transporte)
+> el proveedor de transporte, o la clave de idempotencia del proveedor, como
+> `X-Idempotency-Key`)
 
 ### 2.5 Principios sin cambios
 
@@ -162,7 +162,9 @@ TODOs diferidos: ninguno.
 
 ## 4. Aprobación
 
-- [ ] Aprobado por el responsable del proyecto (fecha: ____)
-- [ ] Aplicada a `.specify/memory/constitution.md` con el Sync Impact Report
-      actualizado (`/speckit-constitution`)
-- [ ] Propagada a `CLAUDE.md`, `.env.example` y los documentos de deploy
+- [x] Aprobado por el responsable del proyecto (fecha: 2026-09-23)
+- [x] Aplicada a `.specify/memory/constitution.md` con el Sync Impact Report
+      actualizado
+- [x] Propagada a `CLAUDE.md` (reglas de Soberanía y Sandbox)
+- [ ] `.env.example`: en F1 (variables `WHATSAPP_PROVIDER` y `KAPSO_*`)
+- [ ] Documentos de deploy (nota de transparencia de datos): en F6
