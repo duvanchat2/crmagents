@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { apiError, parseBody, withAuth } from "@/lib/api";
+import { getEnv, getWhatsappProvider } from "@/lib/env";
 import {
   getCredentialsByOrg,
   saveCredentials,
@@ -9,16 +10,29 @@ import { subscribeAppToWaba, testConnection } from "@/server/whatsapp/connect";
 
 export const dynamic = "force-dynamic";
 
+/** Transporte activo + últimos 4 de la API key de Kapso (jamás la key). */
+function transportInfo() {
+  const provider = getWhatsappProvider();
+  const key = getEnv().KAPSO_API_KEY;
+  return {
+    provider,
+    apiKeyLast4: provider === "kapso" && key ? tokenLast4(key) : null,
+  };
+}
+
 export const GET = withAuth(async (session) => {
   const creds = await getCredentialsByOrg(session.organizationId);
-  if (!creds) return Response.json({ connection: null });
+  const transport = transportInfo();
+  if (!creds) return Response.json({ ...transport, connection: null });
   return Response.json({
+    ...transport,
     connection: {
       wabaId: creds.wabaId,
       phoneNumberId: creds.phoneNumberId,
       displayPhoneNumber: creds.displayPhoneNumber,
       verifiedName: creds.verifiedName,
       status: creds.status,
+      provider: creds.provider,
       tokenLast4: tokenLast4(creds.token),
     },
   });
@@ -27,15 +41,22 @@ export const GET = withAuth(async (session) => {
 const putSchema = z.object({
   wabaId: z.string().trim().min(1),
   phoneNumberId: z.string().trim().min(1),
-  token: z.string().trim().min(1),
+  /** Obligatorio en meta; en kapso se ignora (API key de instancia). */
+  token: z.string().trim().min(1).optional(),
 });
 
-/** Guarda la conexión: re-valida contra Meta, cifra y suscribe (FR-040). */
+/** Guarda la conexión: re-valida contra el transporte, cifra y suscribe (FR-040). */
 export const PUT = withAuth(async (session, req: Request) => {
   const body = await parseBody(req, putSchema);
   if (!body.ok) return body.response;
 
-  const check = await testConnection(body.data.phoneNumberId, body.data.token);
+  const provider = getWhatsappProvider();
+  const token = provider === "meta" ? body.data.token : undefined;
+  if (provider === "meta" && !token) {
+    return apiError(422, "invalid_token", "Falta el token de acceso");
+  }
+
+  const check = await testConnection(body.data.phoneNumberId, token);
   if (!check.ok) {
     const status = check.code === "meta_unavailable" ? 503 : 422;
     return apiError(status, check.code, check.message);
@@ -43,15 +64,17 @@ export const PUT = withAuth(async (session, req: Request) => {
 
   await saveCredentials({
     organizationId: session.organizationId,
-    wabaId: body.data.wabaId,
+    // Kapso informa la WABA real del número: prevalece sobre la tecleada.
+    wabaId: check.wabaId ?? body.data.wabaId,
     phoneNumberId: body.data.phoneNumberId,
-    token: body.data.token,
+    provider,
+    token: token ?? null,
     displayPhoneNumber: check.displayPhoneNumber,
     verifiedName: check.verifiedName,
   });
 
   // Best-effort: necesaria en modo directo; el modo agencia usa su override.
-  await subscribeAppToWaba(body.data.wabaId, body.data.token);
+  await subscribeAppToWaba(check.wabaId ?? body.data.wabaId, token ?? null);
 
   return Response.json({
     ok: true,

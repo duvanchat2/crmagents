@@ -14,14 +14,21 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
+type Provider = "meta" | "kapso";
+
 type Connection = {
   wabaId: string;
   phoneNumberId: string;
   displayPhoneNumber: string | null;
   verifiedName: string | null;
   status: "connected" | "reconnect_required";
-  tokenLast4: string;
+  provider: Provider;
+  tokenLast4: string | null;
 };
+
+type Transport = { provider: Provider; apiKeyLast4: string | null };
+
+const PROVIDER_LABEL: Record<Provider, string> = { meta: "Meta", kapso: "Kapso" };
 
 type WebhookInfo = {
   url: string;
@@ -32,6 +39,10 @@ type WebhookInfo = {
 
 export function WhatsappWizard() {
   const [connection, setConnection] = useState<Connection | null>(null);
+  const [transport, setTransport] = useState<Transport>({
+    provider: "meta",
+    apiKeyLast4: null,
+  });
   const [webhook, setWebhook] = useState<WebhookInfo | null>(null);
   const [loaded, setLoaded] = useState(false);
 
@@ -40,7 +51,10 @@ export function WhatsappWizard() {
       fetch("/api/settings/whatsapp").then((r) => (r.ok ? r.json() : null)),
       fetch("/api/settings/webhook").then((r) => (r.ok ? r.json() : null)),
     ]).catch(() => [null, null]);
-    if (c) setConnection(c.connection);
+    if (c) {
+      setConnection(c.connection);
+      setTransport({ provider: c.provider ?? "meta", apiKeyLast4: c.apiKeyLast4 ?? null });
+    }
     if (w) setWebhook(w);
     setLoaded(true);
   }, []);
@@ -53,9 +67,27 @@ export function WhatsappWizard() {
     return <p className="text-sm text-muted-foreground">Cargando…</p>;
   }
 
+  const providerMismatch =
+    connection !== null && connection.provider !== transport.provider;
+
   return (
     <div className="max-w-3xl space-y-6">
-      {connection?.status === "reconnect_required" && (
+      {providerMismatch && connection && (
+        <div className="flex items-start gap-2 rounded-lg border border-[#ece2cf] bg-[#faf7f0] p-4 text-sm">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-[#8a6d3b]" />
+          <div>
+            <p className="font-medium text-[#8a6d3b]">
+              La conexión guardada es de {PROVIDER_LABEL[connection.provider]}, pero
+              esta instancia usa {PROVIDER_LABEL[transport.provider]}.
+            </p>
+            <p className="text-[#8a6d3b]/80">
+              Los envíos están pausados hasta que vuelvas a conectar el número abajo.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {!providerMismatch && connection?.status === "reconnect_required" && (
         <div className="flex items-start gap-2 rounded-lg border border-[#ecd4d2] bg-[#faf1f0] p-4 text-sm">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
           <div>
@@ -70,7 +102,7 @@ export function WhatsappWizard() {
         </div>
       )}
 
-      {connection && connection.status === "connected" && (
+      {connection && !providerMismatch && connection.status === "connected" && (
         <div className="flex items-center gap-3 rounded-lg border border-[#d8e8dd] bg-[#eff7f1] p-4">
           <CheckCircle2 className="h-5 w-5 text-success" />
           <div className="flex-1 text-sm">
@@ -79,27 +111,36 @@ export function WhatsappWizard() {
             </p>
             <p className="text-[#3f6b52]/80">
               {connection.verifiedName ? `${connection.verifiedName} · ` : ""}
-              token …{connection.tokenLast4}
+              {connection.provider === "kapso"
+                ? `vía Kapso · API key …${transport.apiKeyLast4 ?? "????"}`
+                : `token …${connection.tokenLast4 ?? "????"}`}
             </p>
           </div>
           <Badge variant="success">Conectado</Badge>
         </div>
       )}
 
-      <ConnectForm existing={connection} onSaved={() => void refetch()} />
+      <ConnectForm
+        existing={connection}
+        transport={transport}
+        onSaved={() => void refetch()}
+      />
 
-      {webhook && <WebhookCard webhook={webhook} />}
+      {webhook && <WebhookCard webhook={webhook} provider={transport.provider} />}
     </div>
   );
 }
 
 function ConnectForm({
   existing,
+  transport,
   onSaved,
 }: {
   existing: Connection | null;
+  transport: Transport;
   onSaved: () => void;
 }) {
+  const isKapso = transport.provider === "kapso";
   const [wabaId, setWabaId] = useState(existing?.wabaId ?? "");
   const [phoneNumberId, setPhoneNumberId] = useState(
     existing?.phoneNumberId ?? ""
@@ -114,7 +155,10 @@ function ConnectForm({
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
-  const canTest = wabaId.trim() && phoneNumberId.trim() && token.trim();
+  // En Kapso no hay token por número y la WABA la informa Kapso al probar.
+  const canTest = isKapso
+    ? phoneNumberId.trim()
+    : wabaId.trim() && phoneNumberId.trim() && token.trim();
 
   async function test() {
     setTesting(true);
@@ -122,7 +166,7 @@ function ConnectForm({
     const res = await fetch("/api/settings/whatsapp/test", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ phoneNumberId, token }),
+      body: JSON.stringify(isKapso ? { phoneNumberId } : { phoneNumberId, token }),
     }).catch(() => null);
     setTesting(false);
     if (!res) {
@@ -131,9 +175,11 @@ function ConnectForm({
     }
     const data = (await res.json().catch(() => null)) as {
       displayPhoneNumber?: string;
+      wabaId?: string | null;
       error?: { message?: string };
     } | null;
     if (res.ok && data?.displayPhoneNumber) {
+      if (data.wabaId) setWabaId(data.wabaId);
       setTestResult({ ok: true, display: data.displayPhoneNumber });
     } else {
       setTestResult({
@@ -149,7 +195,9 @@ function ConnectForm({
     const res = await fetch("/api/settings/whatsapp", {
       method: "PUT",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ wabaId, phoneNumberId, token }),
+      body: JSON.stringify(
+        isKapso ? { wabaId, phoneNumberId } : { wabaId, phoneNumberId, token }
+      ),
     }).catch(() => null);
     setSaving(false);
     if (!res?.ok) {
@@ -171,11 +219,13 @@ function ConnectForm({
           {existing ? "Reconectar / actualizar el número" : "Conectar tu número de WhatsApp"}
         </CardTitle>
         <CardDescription>
-          Pega las credenciales de WhatsApp Cloud API. El token se valida
-          contra Meta ANTES de guardarse y se almacena cifrado.
+          {isKapso
+            ? `Esta instancia envía por Kapso con la API key de la instancia (…${transport.apiKeyLast4 ?? "????"}). Indica el Phone Number ID de un número ya conectado en app.kapso.ai: se valida contra tu cuenta de Kapso antes de guardarse.`
+            : "Pega las credenciales de WhatsApp Cloud API. El token se valida contra Meta ANTES de guardarse y se almacena cifrado."}
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
+        {!isKapso && (
         <div className="grid gap-3 rounded-md border bg-background/40 p-4 text-sm">
           <p className="font-medium">¿De dónde sale el token?</p>
           <div className="grid gap-3 md:grid-cols-2">
@@ -201,13 +251,18 @@ function ConnectForm({
             </div>
           </div>
         </div>
+        )}
 
         <div className="grid gap-4 md:grid-cols-2">
           <div className="space-y-1.5">
             <Label htmlFor="waba-id">WABA ID</Label>
             <Input
               id="waba-id"
-              placeholder="ID de la cuenta de WhatsApp Business"
+              placeholder={
+                isKapso
+                  ? "Se completa al probar la conexión"
+                  : "ID de la cuenta de WhatsApp Business"
+              }
               value={wabaId}
               onChange={(e) => setWabaId(e.target.value)}
             />
@@ -222,6 +277,7 @@ function ConnectForm({
             />
           </div>
         </div>
+        {!isKapso && (
         <div className="space-y-1.5">
           <Label htmlFor="token">Token de acceso</Label>
           <Input
@@ -235,13 +291,16 @@ function ConnectForm({
             }}
           />
         </div>
+        )}
 
         {testResult && (
           <p
             className={`text-sm ${testResult.ok ? "text-success" : "text-destructive"}`}
           >
             {testResult.ok
-              ? `✓ Token válido para ${testResult.display}. Ya puedes guardar.`
+              ? isKapso
+                ? `✓ Número encontrado en Kapso: ${testResult.display}. Ya puedes guardar.`
+                : `✓ Token válido para ${testResult.display}. Ya puedes guardar.`
               : testResult.message}
           </p>
         )}
@@ -267,7 +326,13 @@ function ConnectForm({
   );
 }
 
-function WebhookCard({ webhook }: { webhook: WebhookInfo }) {
+function WebhookCard({
+  webhook,
+  provider,
+}: {
+  webhook: WebhookInfo;
+  provider: Provider;
+}) {
   const [copied, setCopied] = useState<string | null>(null);
 
   function copy(text: string, which: string) {
@@ -293,6 +358,15 @@ function WebhookCard({ webhook }: { webhook: WebhookInfo }) {
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
+        {provider === "kapso" && (
+          <p className="flex items-start gap-2 rounded-md border bg-background/40 p-3 text-xs text-muted-foreground">
+            <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            Modo Kapso: por ahora la instancia solo ENVÍA por Kapso. La
+            recepción de mensajes vía webhook de Kapso (tipo &quot;meta&quot; hacia
+            esta misma URL, con firma X-Webhook-Signature) llega en la
+            siguiente entrega; no la registres todavía.
+          </p>
+        )}
         {!webhook.isHttps && (
           <p className="flex items-start gap-2 rounded-md border border-[#ece2cf] bg-[#faf7f0] p-3 text-xs text-[#8a6d3b]">
             <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />

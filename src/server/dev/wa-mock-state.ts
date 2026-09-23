@@ -10,8 +10,30 @@ export type OutboxEntry = {
   to: string;
   type: string;
   body: unknown;
+  /** Cómo se autenticó el envío: Bearer (Meta) o X-API-Key (proxy Kapso). */
+  auth: "bearer" | "api-key" | "none";
   at: string;
 };
+
+/** Números que el mock de Kapso reporta en /platform/v1/whatsapp/phone_numbers. */
+export const MOCK_KAPSO_PHONE_NUMBERS = [
+  {
+    id: "kpn_mock_1",
+    phone_number_id: "kapso-pn-1",
+    business_account_id: "kapso-waba-1",
+    display_phone_number: "+52 55 1111 0001",
+    verified_name: "Número Kapso de prueba 1",
+    status: "CONNECTED",
+  },
+  {
+    id: "kpn_mock_2",
+    phone_number_id: "kapso-pn-2",
+    business_account_id: "kapso-waba-1",
+    display_phone_number: "+52 55 1111 0002",
+    verified_name: "Número Kapso de prueba 2",
+    status: "CONNECTED",
+  },
+];
 
 export type MockTemplate = {
   id: string;
@@ -43,4 +65,15 @@ export function resetWaMockState(): void {
 
 export function nextN(): number {
   return ++getWaMockState().counter;
+}
+
+/**
+ * Sufijo del proceso: el estado vive en memoria y el contador vuelve a 1 en
+ * cada arranque, pero los wamid persisten en la BD (UNIQUE). Como en WhatsApp
+ * real, los ids del mock deben ser únicos también entre reinicios.
+ */
+const BOOT_ID = Date.now().toString(36);
+
+export function mockWamid(direction: "in" | "out", n: number): string {
+  return `wamid.mock.${direction}.${n}.${BOOT_ID}`;
 }

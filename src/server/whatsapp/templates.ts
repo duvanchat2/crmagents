@@ -4,10 +4,13 @@ import { newId } from "@/lib/db/ids";
 import { graphRequest, MetaApiError, normalizeRecipient } from "@/lib/meta/client";
 import { scoped } from "@/lib/db/tenant";
 import { publish } from "@/server/events/bus";
+import { getWhatsappProvider } from "@/lib/env";
 import {
+  connectionProblem,
   getCredentialsByOrg,
   getCredentialsByWabaId,
-  markReconnectRequired,
+  handleTransportAuthError,
+  transportLabel,
 } from "@/server/whatsapp/credentials";
 import { callGraphSend, SendError } from "@/server/inbox/send";
 import { serializeMessage } from "@/server/inbox/ingest";
@@ -41,6 +44,22 @@ const TEMPLATE_ERROR_STATUS: Record<TemplateError["code"], number> = {
 
 export function templateErrorStatus(err: TemplateError): number {
   return TEMPLATE_ERROR_STATUS[err.code];
+}
+
+/**
+ * Conexión usable para plantillas con el transporte activo. syncTemplates
+ * tolera reconnect_required (histórico: el pull de estados no se bloqueaba).
+ */
+async function getUsableCredentials(
+  organizationId: string,
+  opts: { allowReconnect?: boolean } = {}
+) {
+  const creds = await getCredentialsByOrg(organizationId);
+  const problem = connectionProblem(creds);
+  if (problem && !(opts.allowReconnect && problem.code === "reconnect_required")) {
+    throw new TemplateError(problem.code, problem.message);
+  }
+  return creds!;
 }
 
 const VARIABLE_REGEX = /\{\{\s*(\d+)\s*\}\}/g;
@@ -88,13 +107,7 @@ export async function createTemplate(
   const variableError = validateBodyVariables(input.body);
   if (variableError) throw new TemplateError("invalid", variableError);
 
-  const creds = await getCredentialsByOrg(organizationId);
-  if (!creds) {
-    throw new TemplateError("not_connected", "Conecta tu número de WhatsApp primero");
-  }
-  if (creds.status === "reconnect_required") {
-    throw new TemplateError("reconnect_required", "Reconecta tu número antes de crear plantillas");
-  }
+  const creds = await getUsableCredentials(organizationId);
 
   const name = input.name
     .toLowerCase()
@@ -129,12 +142,13 @@ export async function createTemplate(
     waTemplateId = res.id ?? null;
   } catch (err) {
     if (err instanceof MetaApiError) {
-      if (err.isAuthError) {
-        await markReconnectRequired(organizationId);
-        throw new TemplateError("reconnect_required", "El token expiró: reconecta el número");
-      }
+      const authMessage = await handleTransportAuthError(err, organizationId);
+      if (authMessage) throw new TemplateError("reconnect_required", authMessage);
       if (err.status === 0 || err.status >= 500) {
-        throw new TemplateError("meta_unavailable", "Meta no está disponible ahora");
+        throw new TemplateError(
+          "meta_unavailable",
+          `${transportLabel(getWhatsappProvider())} no está disponible ahora`
+        );
       }
       throw new TemplateError("meta_error", err.message);
     }
@@ -191,10 +205,7 @@ function mapMetaStatus(
  * así que el pull es la vía universal (DV-VC-04/DV-VC-15).
  */
 export async function syncTemplates(organizationId: string): Promise<number> {
-  const creds = await getCredentialsByOrg(organizationId);
-  if (!creds) {
-    throw new TemplateError("not_connected", "Conecta tu número de WhatsApp primero");
-  }
+  const creds = await getUsableCredentials(organizationId, { allowReconnect: true });
 
   let data: {
     data?: { id?: string; name?: string; language?: string; status?: string; quality_score?: unknown; rejected_reason?: string }[];
@@ -205,11 +216,12 @@ export async function syncTemplates(organizationId: string): Promise<number> {
     });
   } catch (err) {
     if (err instanceof MetaApiError) {
-      if (err.isAuthError) {
-        await markReconnectRequired(organizationId);
-        throw new TemplateError("reconnect_required", "El token expiró: reconecta el número");
-      }
-      throw new TemplateError("meta_unavailable", "No se pudo consultar Meta");
+      const authMessage = await handleTransportAuthError(err, organizationId);
+      if (authMessage) throw new TemplateError("reconnect_required", authMessage);
+      throw new TemplateError(
+        "meta_unavailable",
+        `No se pudo consultar ${transportLabel(getWhatsappProvider())}`
+      );
     }
     throw err;
   }
@@ -330,11 +342,7 @@ export async function sendTemplate(input: {
     );
   }
 
-  const creds = await getCredentialsByOrg(input.organizationId);
-  if (!creds) throw new TemplateError("not_connected", "Sin número conectado");
-  if (creds.status === "reconnect_required") {
-    throw new TemplateError("reconnect_required", "Reconecta el número");
-  }
+  const creds = await getUsableCredentials(input.organizationId);
 
   const waMessageId = await callGraphSend(creds, {
     messaging_product: "whatsapp",

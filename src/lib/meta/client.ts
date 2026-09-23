@@ -1,9 +1,13 @@
-import { getEnv } from "@/lib/env";
+import { getEnv, type WhatsappProvider } from "@/lib/env";
 
 /**
- * Cliente propio de la Graph API de Meta (WhatsApp Cloud API).
- * Única frontera de salida hacia Meta (Constitución II): todo request pasa
- * por graphRequest. En self-test, META_GRAPH_BASE_URL apunta al wa-mock.
+ * Cliente propio del transporte de WhatsApp (Cloud API).
+ * Única frontera de salida (Constitución II): todo request pasa por
+ * graphRequest / kapsoPlatformRequest. El transporte lo fija WHATSAPP_PROVIDER:
+ *  - meta:  Graph API directa, `Authorization: Bearer <token del número>`.
+ *  - kapso: proxy de Kapso con las mismas rutas y respuestas de Graph,
+ *           `X-API-Key: <KAPSO_API_KEY>` (clave de instancia; el token no aplica).
+ * En self-test, las URLs base apuntan al wa-mock.
  */
 
 export class MetaApiError extends Error {
@@ -24,6 +28,21 @@ export class MetaApiError extends Error {
     this.details = opts.details;
   }
 
+  /**
+   * API key de Kapso rechazada (modo kapso): 401 o 403 del proxy que NO sea un
+   * error OAuth de Meta reenviado (ese es del token que Kapso guarda del número).
+   */
+  get isApiKeyError(): boolean {
+    return (
+      (this.status === 401 || this.status === 403) && !this.isMetaOAuthError
+    );
+  }
+
+  /** Error OAuth con la forma de Meta (code 190 / OAuthException). */
+  get isMetaOAuthError(): boolean {
+    return this.code === 190 || this.type === "OAuthException";
+  }
+
   /** Token vencido/revocado → la conexión requiere re-autenticación. */
   get isAuthError(): boolean {
     return (
@@ -32,22 +51,78 @@ export class MetaApiError extends Error {
   }
 }
 
+type Transport = {
+  provider: WhatsappProvider;
+  baseUrl: string;
+  headers: Record<string, string>;
+};
+
+/** Resuelve URL base y auth del transporte activo. */
+export function resolveTransport(token?: string | null): Transport {
+  const env = getEnv();
+  if (env.WHATSAPP_PROVIDER === "kapso") {
+    return {
+      provider: "kapso",
+      baseUrl: `${trimSlash(env.KAPSO_WHATSAPP_API_URL)}/${env.KAPSO_GRAPH_API_VERSION}`,
+      headers: { "X-API-Key": env.KAPSO_API_KEY ?? "" },
+    };
+  }
+  if (!token) {
+    // Error de programación: los llamadores validan la conexión antes.
+    throw new Error("graphRequest en modo meta requiere el token del número");
+  }
+  return {
+    provider: "meta",
+    baseUrl: `${trimSlash(env.META_GRAPH_BASE_URL)}/${env.META_GRAPH_API_VERSION}`,
+    headers: { Authorization: `Bearer ${token}` },
+  };
+}
+
 export async function graphRequest<T>(
   path: string,
   opts: {
     method?: "GET" | "POST" | "DELETE";
-    token: string;
+    /** Token del número (modo meta). Se ignora en modo kapso. */
+    token?: string | null;
     body?: unknown;
   }
 ): Promise<T> {
+  const transport = resolveTransport(opts.token);
+  return sendRequest<T>(`${transport.baseUrl}/${path}`, transport, opts);
+}
+
+/**
+ * API de plataforma de Kapso (`/platform/v1/...`): descubrimiento de números y
+ * webhooks. Solo existe en modo kapso.
+ */
+export async function kapsoPlatformRequest<T>(
+  path: string,
+  opts: { method?: "GET" | "POST" | "DELETE"; body?: unknown } = {}
+): Promise<T> {
   const env = getEnv();
-  const url = `${env.META_GRAPH_BASE_URL}/${env.META_GRAPH_API_VERSION}/${path}`;
+  if (env.WHATSAPP_PROVIDER !== "kapso") {
+    throw new Error("kapsoPlatformRequest solo aplica con WHATSAPP_PROVIDER=kapso");
+  }
+  const transport: Transport = {
+    provider: "kapso",
+    baseUrl: `${trimSlash(env.KAPSO_API_BASE_URL)}/platform/v1`,
+    headers: { "X-API-Key": env.KAPSO_API_KEY ?? "" },
+  };
+  return sendRequest<T>(`${transport.baseUrl}/${path.replace(/^\//, "")}`, transport, opts);
+}
+
+async function sendRequest<T>(
+  url: string,
+  transport: Transport,
+  opts: { method?: "GET" | "POST" | "DELETE"; body?: unknown }
+): Promise<T> {
+  const providerName = transport.provider === "kapso" ? "Kapso" : "Meta";
   let res: Response;
   try {
     res = await fetch(url, {
       method: opts.method ?? "GET",
       headers: {
-        Authorization: `Bearer ${opts.token}`,
+        ...transport.headers,
         ...(opts.body !== undefined
           ? { "Content-Type": "application/json" }
           : {}),
@@ -55,7 +130,7 @@ export async function graphRequest<T>(
       body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
     });
   } catch (cause) {
-    throw new MetaApiError("No se pudo contactar la API de Meta", {
+    throw new MetaApiError(`No se pudo contactar la API de ${providerName}`, {
       status: 0,
       details: cause,
     });
@@ -70,16 +145,21 @@ export async function graphRequest<T>(
   }
 
   if (!res.ok) {
-    const err = (json as { error?: { message?: string; code?: number; type?: string } })
+    const err = (json as { error?: { message?: string; code?: number; type?: string } | string })
       ?.error;
-    throw new MetaApiError(err?.message ?? `Meta respondió ${res.status}`, {
+    const detail = typeof err === "string" ? { message: err } : err;
+    throw new MetaApiError(detail?.message ?? `${providerName} respondió ${res.status}`, {
       status: res.status,
-      code: err?.code ?? null,
-      type: err?.type ?? null,
+      code: detail?.code ?? null,
+      type: detail?.type ?? null,
       details: json ?? text,
     });
   }
   return json as T;
+}
+
+function trimSlash(url: string): string {
+  return url.replace(/\/+$/, "");
 }
 
 /**
