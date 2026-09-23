@@ -22,6 +22,17 @@ const envSchema = z.object({
   META_APP_SECRET: z.string().optional(),
   META_GRAPH_API_VERSION: z.string().default("v25.0"),
   META_GRAPH_BASE_URL: z.string().url().default("https://graph.facebook.com"),
+  /** Transporte de WhatsApp (Constitución II): Meta directo o proxy de Kapso. */
+  WHATSAPP_PROVIDER: z.enum(["meta", "kapso"]).default("meta"),
+  KAPSO_API_KEY: z.string().optional(),
+  KAPSO_WHATSAPP_API_URL: z
+    .string()
+    .url()
+    .default("https://api.kapso.ai/meta/whatsapp"),
+  KAPSO_GRAPH_API_VERSION: z.string().default("v24.0"),
+  KAPSO_API_BASE_URL: z.string().url().default("https://api.kapso.ai"),
+  /** Quién responde en conversaciones reales: Hermes (en Kapso) o el agente interno. */
+  AGENT_ENGINE: z.enum(["vocero", "hermes"]).optional(),
   OPENROUTER_API_TOKEN: z.string().optional(),
   OPENROUTER_BASE_URL: z.string().url().default("https://openrouter.ai/api"),
   OPENROUTER_MODEL: z.string().optional(),
@@ -30,6 +41,15 @@ const envSchema = z.object({
   AGENT_COALESCE_MS: z.coerce.number().int().min(0).default(6000),
   WA_MOCK_ENABLED: z.string().optional(),
   NODE_ENV: z.string().default("development"),
+}).superRefine((env, ctx) => {
+  if (env.WHATSAPP_PROVIDER === "kapso" && !env.KAPSO_API_KEY) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["KAPSO_API_KEY"],
+      message:
+        "obligatoria con WHATSAPP_PROVIDER=kapso (app.kapso.ai → API keys)",
+    });
+  }
 });
 
 export type Env = z.infer<typeof envSchema>;
@@ -40,6 +60,7 @@ const BUILD_PLACEHOLDERS: Record<string, string> = {
   BETTER_AUTH_SECRET: "placeholder-build-secret",
   ENCRYPTION_KEY: Buffer.alloc(32).toString("base64"),
   META_WEBHOOK_VERIFY_TOKEN: "placeholder-verify-token",
+  KAPSO_API_KEY: "placeholder-kapso-key",
 };
 
 let cached: Env | null = null;
@@ -86,4 +107,21 @@ export function isMockEnabled(): boolean {
 export function isAiConfigured(): boolean {
   const token = process.env.OPENROUTER_API_TOKEN;
   return typeof token === "string" && token.trim().length > 0;
+}
+
+export type WhatsappProvider = Env["WHATSAPP_PROVIDER"];
+
+/** Transporte de WhatsApp activo en la instancia (default: meta). */
+export function getWhatsappProvider(): WhatsappProvider {
+  return getEnv().WHATSAPP_PROVIDER;
+}
+
+/**
+ * Motor del agente para conversaciones REALES. Con Kapso el cerebro es Hermes
+ * (default) y el agente interno no debe responder — garantía de un solo
+ * agente (Constitución II). Con Meta el default es el agente interno.
+ */
+export function getAgentEngine(): "vocero" | "hermes" {
+  const env = getEnv();
+  return env.AGENT_ENGINE ?? (env.WHATSAPP_PROVIDER === "kapso" ? "hermes" : "vocero");
 }

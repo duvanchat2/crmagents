@@ -1,6 +1,6 @@
 import { createHmac } from "node:crypto";
 import { getEnv } from "@/lib/env";
-import { nextN } from "@/server/dev/wa-mock-state";
+import { mockWamid, nextN } from "@/server/dev/wa-mock-state";
 
 /**
  * Construye un payload real de Meta y lo entrega al webhook público por
@@ -39,7 +39,7 @@ export function buildInboundPayload(input: {
   const type = input.type ?? "text";
   const message: Record<string, unknown> = {
     from: input.from,
-    id: input.waMessageId ?? `wamid.mock.in.${nextN()}`,
+    id: input.waMessageId ?? mockWamid("in", nextN()),
     timestamp: String(input.timestamp ?? Math.floor(Date.now() / 1000)),
     type,
   };

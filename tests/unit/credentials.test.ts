@@ -39,6 +39,7 @@ describe("credenciales de WhatsApp", () => {
       organizationId: "org_1",
       wabaId: "waba1",
       phoneNumberId: "pn1",
+      provider: "meta",
       token,
     });
     const row = insertedRows[0]!;
@@ -59,8 +60,39 @@ describe("credenciales de WhatsApp", () => {
     ).toBe(token);
   });
 
+  it("kapso: se guarda sin token (API key de instancia) y con su proveedor", async () => {
+    const { saveCredentials } = await import("@/server/whatsapp/credentials");
+    insertedRows.length = 0;
+    await saveCredentials({
+      organizationId: "org_1",
+      wabaId: "waba1",
+      phoneNumberId: "pn1",
+      provider: "kapso",
+    });
+    const row = insertedRows[0]!;
+    expect(row.provider).toBe("kapso");
+    expect(row.tokenCipher).toBeNull();
+    expect(row.tokenIv).toBeNull();
+    expect(row.tokenTag).toBeNull();
+  });
+
+  it("meta sin token se rechaza antes de escribir", async () => {
+    const { saveCredentials } = await import("@/server/whatsapp/credentials");
+    insertedRows.length = 0;
+    await expect(
+      saveCredentials({
+        organizationId: "org_1",
+        wabaId: "waba1",
+        phoneNumberId: "pn1",
+        provider: "meta",
+      })
+    ).rejects.toThrow(/requiere token/);
+    expect(insertedRows).toHaveLength(0);
+  });
+
   it("tokenLast4 expone solo los últimos 4 caracteres", async () => {
     const { tokenLast4 } = await import("@/server/whatsapp/credentials");
     expect(tokenLast4("EAAG-token-super-secreto-abcd")).toBe("abcd");
+    expect(tokenLast4(null)).toBeNull();
   });
 });

@@ -243,9 +243,14 @@ export const metaCredentials = pgTable(
     phoneNumberId: text("phone_number_id").notNull(),
     displayPhoneNumber: text("display_phone_number"),
     verifiedName: text("verified_name"),
-    tokenCipher: text("token_cipher").notNull(),
-    tokenIv: text("token_iv").notNull(),
-    tokenTag: text("token_tag").notNull(),
+    /** Transporte con el que se conectó el número (WHATSAPP_PROVIDER). */
+    provider: text("provider", { enum: ["meta", "kapso"] })
+      .notNull()
+      .default("meta"),
+    /** Token cifrado del número: obligatorio en meta; NULL en kapso (API key de instancia). */
+    tokenCipher: text("token_cipher"),
+    tokenIv: text("token_iv"),
+    tokenTag: text("token_tag"),
     status: text("status", { enum: ["connected", "reconnect_required"] })
       .notNull()
       .default("connected"),
