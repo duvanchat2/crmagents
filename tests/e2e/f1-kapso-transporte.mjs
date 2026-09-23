@@ -132,14 +132,14 @@ try {
     await page.goto(`${BASE}/settings/whatsapp`);
     await page.fill("#phone-number-id", "kapso-pn-1");
     await page.getByRole("button", { name: "Probar conexión" }).click();
-    await page.getByText("Kapso rechazó la API key").waitFor({ timeout: 15000 });
+    await page.getByText("Kapso rechazó la API key").first().waitFor({ timeout: 15000 });
     check("wizard: key inválida → mensaje KAPSO_API_KEY", true);
     await openConversation("Cliente Kapso", "Hola, te atiendo por Kapso");
     await sendFromComposer("mensaje con key inválida");
     await page.getByText("Kapso rechazó la API key").first().waitFor({ timeout: 15000 });
     check("envío: key inválida → error visible, sin colgarse", true);
     const conn = await (await api.get(`${BASE}/api/settings/whatsapp`)).json();
-    check("la conexión NO se marca reconnect_required (la key es de .env)", conn.connection?.status === "connected", conn.connection?.status);
+    check("la conexión NO se marca reconnect_required (la key es de .env)", conn.numbers?.[0]?.status === "connected", conn.numbers?.[0]?.status);
     await page.screenshot({ path: `${SHOTS}/04-key-invalida.png`, fullPage: true });
   }
 
@@ -148,7 +148,7 @@ try {
     await page.goto(`${BASE}/settings/whatsapp`);
     await page.fill("#phone-number-id", "kapso-pn-1");
     await page.getByRole("button", { name: "Probar conexión" }).click();
-    await page.getByText("Kapso no está disponible").waitFor({ timeout: 20000 });
+    await page.getByText("Kapso no está disponible").first().waitFor({ timeout: 20000 });
     check("wizard: Kapso caído → degradado", true);
     await openConversation("Cliente Kapso", "Hola, te atiendo por Kapso");
     await sendFromComposer("mensaje con Kapso caído");

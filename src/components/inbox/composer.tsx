@@ -5,7 +5,7 @@ import { Clock3, Send } from "lucide-react";
 import type { ConversationDto, TemplateDto } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { formatRemaining } from "./helpers";
-import { TemplateSender } from "./template-sender";
+import { TemplateSender, templateFitsWaba } from "./template-sender";
 
 export function Composer({
   conversation,
@@ -21,6 +21,8 @@ export function Composer({
   const [error, setError] = useState<string | null>(null);
   const [templates, setTemplates] = useState<TemplateDto[]>([]);
   const taRef = useRef<HTMLTextAreaElement>(null);
+  // F2: las plantillas son por WABA; solo las del número de esta conversación.
+  const wabaId = conversation.number?.wabaId ?? null;
 
   useEffect(() => {
     let cancelled = false;
@@ -28,13 +30,17 @@ export function Composer({
       .then((r) => (r.ok ? r.json() : { templates: [] }))
       .then((d: { templates?: TemplateDto[] }) => {
         if (!cancelled)
-          setTemplates((d.templates ?? []).filter((t) => t.status === "approved"));
+          setTemplates(
+            (d.templates ?? []).filter(
+              (t) => t.status === "approved" && templateFitsWaba(t, wabaId)
+            )
+          );
       })
       .catch(() => {});
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [wabaId]);
 
   function autogrow() {
     const el = taRef.current;
@@ -72,7 +78,11 @@ export function Composer({
             </p>
           </div>
         </div>
-        <TemplateSender conversationId={conversation.id} onSent={onSent} />
+        <TemplateSender
+          conversationId={conversation.id}
+          wabaId={wabaId}
+          onSent={onSent}
+        />
       </div>
     );
   }

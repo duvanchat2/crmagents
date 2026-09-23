@@ -30,7 +30,9 @@ externas: el trabajo en segundo plano (agente, Laboratorio) es in-process.
 | Las personas o el juez del Laboratorio | `src/server/lab/personas.ts` · `src/server/lab/judge.ts` |
 | El canal WhatsApp (Graph API directa o proxy Kapso) | `src/lib/meta/` (cliente único; resuelve el transporte por `WHATSAPP_PROVIDER`) + `src/server/whatsapp/` |
 | Campos/tablas | `src/lib/db/schema.ts` → `pnpm db:generate` → migración nueva en `drizzle/` |
-| La ingesta/envío de mensajes | `src/server/inbox/` (ingest idempotente, send con guard de sandbox, ventana 24h) |
+| La ingesta/envío de mensajes | `src/server/inbox/` (ingest idempotente, send con guard de sandbox, ventana 24h; conversación y lead por número + teléfono) |
+| Los números de WhatsApp de la organización | `src/server/whatsapp/credentials.ts` (tabla `whatsapp_number`; varios por organización, uno predeterminado) |
+| La normalización de teléfonos | `src/lib/phone.ts` (normalizador ÚNICO: úsalo en toda entrada de teléfono) |
 | UI | `src/components/` + `src/app/(app)/` |
 
 Los mocks del entorno de pruebas viven en `src/app/api/dev/` (wa-mock +

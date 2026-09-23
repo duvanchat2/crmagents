@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull, or } from "drizzle-orm";
 import { getDb, schema } from "@/lib/db";
 import { newId } from "@/lib/db/ids";
 import { graphRequest, MetaApiError, normalizeRecipient } from "@/lib/meta/client";
@@ -7,10 +7,13 @@ import { publish } from "@/server/events/bus";
 import { getWhatsappProvider } from "@/lib/env";
 import {
   connectionProblem,
-  getCredentialsByOrg,
   getCredentialsByWabaId,
+  getDefaultNumber,
+  getNumberForOrg,
   handleTransportAuthError,
+  listNumbers,
   transportLabel,
+  type Credentials,
 } from "@/server/whatsapp/credentials";
 import { callGraphSend, SendError } from "@/server/inbox/send";
 import { serializeMessage } from "@/server/inbox/ingest";
@@ -46,20 +49,29 @@ export function templateErrorStatus(err: TemplateError): number {
   return TEMPLATE_ERROR_STATUS[err.code];
 }
 
-/**
- * Conexión usable para plantillas con el transporte activo. syncTemplates
- * tolera reconnect_required (histórico: el pull de estados no se bloqueaba).
- */
-async function getUsableCredentials(
-  organizationId: string,
+/** Falla con TemplateError si el número no sirve con el transporte activo. */
+function assertUsable(
+  creds: Credentials | null,
   opts: { allowReconnect?: boolean } = {}
-) {
-  const creds = await getCredentialsByOrg(organizationId);
+): Credentials {
   const problem = connectionProblem(creds);
   if (problem && !(opts.allowReconnect && problem.code === "reconnect_required")) {
     throw new TemplateError(problem.code, problem.message);
   }
   return creds!;
+}
+
+/**
+ * Número con el que se opera una WABA: el predeterminado de la organización o,
+ * si se pide otra WABA, un número activo de esa WABA (las plantillas son por WABA).
+ */
+async function numberForWaba(
+  organizationId: string,
+  wabaId?: string | null
+): Promise<Credentials | null> {
+  if (!wabaId) return getDefaultNumber(organizationId);
+  const numbers = await listNumbers(organizationId);
+  return numbers.find((n) => n.wabaId === wabaId && n.enabled) ?? null;
 }
 
 const VARIABLE_REGEX = /\{\{\s*(\d+)\s*\}\}/g;
@@ -94,6 +106,7 @@ export function serializeTemplate(t: TemplateRow) {
     language: t.language,
     category: t.category,
     body: t.body,
+    wabaId: t.wabaId,
     status: t.status,
     rejectionReason: t.rejectionReason,
   };
@@ -102,12 +115,19 @@ export function serializeTemplate(t: TemplateRow) {
 /** Crea la plantilla y la manda a aprobación de Meta (FR-050). */
 export async function createTemplate(
   organizationId: string,
-  input: { name: string; language: string; category: string; body: string }
+  input: {
+    name: string;
+    language: string;
+    category: string;
+    body: string;
+    /** WABA destino; por defecto la del número predeterminado. */
+    wabaId?: string;
+  }
 ): Promise<TemplateRow> {
   const variableError = validateBodyVariables(input.body);
   if (variableError) throw new TemplateError("invalid", variableError);
 
-  const creds = await getUsableCredentials(organizationId);
+  const creds = assertUsable(await numberForWaba(organizationId, input.wabaId));
 
   const name = input.name
     .toLowerCase()
@@ -142,7 +162,7 @@ export async function createTemplate(
     waTemplateId = res.id ?? null;
   } catch (err) {
     if (err instanceof MetaApiError) {
-      const authMessage = await handleTransportAuthError(err, organizationId);
+      const authMessage = await handleTransportAuthError(err, creds);
       if (authMessage) throw new TemplateError("reconnect_required", authMessage);
       if (err.status === 0 || err.status >= 500) {
         throw new TemplateError(
@@ -161,6 +181,7 @@ export async function createTemplate(
     .values({
       id: newId("template"),
       organizationId,
+      wabaId: creds.wabaId,
       name,
       language: input.language,
       category: input.category,
@@ -171,6 +192,7 @@ export async function createTemplate(
     .onConflictDoUpdate({
       target: [
         schema.template.organizationId,
+        schema.template.wabaId,
         schema.template.name,
         schema.template.language,
       ],
@@ -205,26 +227,11 @@ function mapMetaStatus(
  * así que el pull es la vía universal (DV-VC-04/DV-VC-15).
  */
 export async function syncTemplates(organizationId: string): Promise<number> {
-  const creds = await getUsableCredentials(organizationId, { allowReconnect: true });
-
-  let data: {
-    data?: { id?: string; name?: string; language?: string; status?: string; quality_score?: unknown; rejected_reason?: string }[];
-  };
-  try {
-    data = await graphRequest(`${creds.wabaId}/message_templates`, {
-      token: creds.token,
-    });
-  } catch (err) {
-    if (err instanceof MetaApiError) {
-      const authMessage = await handleTransportAuthError(err, organizationId);
-      if (authMessage) throw new TemplateError("reconnect_required", authMessage);
-      throw new TemplateError(
-        "meta_unavailable",
-        `No se pudo consultar ${transportLabel(getWhatsappProvider())}`
-      );
-    }
-    throw err;
-  }
+  // Una consulta por WABA con números activos (F2: puede haber varias).
+  const numbers = (await listNumbers(organizationId)).filter((n) => n.enabled);
+  const byWaba = new Map<string, Credentials>();
+  for (const n of numbers) if (!byWaba.has(n.wabaId)) byWaba.set(n.wabaId, n);
+  if (byWaba.size === 0) assertUsable(null);
 
   const db = getDb();
   const local = await db
@@ -233,25 +240,50 @@ export async function syncTemplates(organizationId: string): Promise<number> {
     .where(scoped(schema.template.organizationId, organizationId));
 
   let updated = 0;
-  for (const remote of data.data ?? []) {
-    const status = mapMetaStatus(remote.status);
-    if (!status) continue;
-    const match = local.find(
-      (t) =>
-        (remote.id && t.waTemplateId === remote.id) ||
-        (t.name === remote.name && t.language === remote.language)
-    );
-    if (!match || match.status === status) continue;
-    await db
-      .update(schema.template)
-      .set({
-        status,
-        rejectionReason: remote.rejected_reason ?? null,
-        waTemplateId: match.waTemplateId ?? remote.id ?? null,
-        updatedAt: new Date(),
-      })
-      .where(eq(schema.template.id, match.id));
-    updated += 1;
+  for (const [wabaId, candidate] of byWaba) {
+    const creds = assertUsable(candidate, { allowReconnect: true });
+    let data: {
+      data?: { id?: string; name?: string; language?: string; status?: string; quality_score?: unknown; rejected_reason?: string }[];
+    };
+    try {
+      data = await graphRequest(`${wabaId}/message_templates`, {
+        token: creds.token,
+      });
+    } catch (err) {
+      if (err instanceof MetaApiError) {
+        const authMessage = await handleTransportAuthError(err, creds);
+        if (authMessage) throw new TemplateError("reconnect_required", authMessage);
+        throw new TemplateError(
+          "meta_unavailable",
+          `No se pudo consultar ${transportLabel(getWhatsappProvider())}`
+        );
+      }
+      throw err;
+    }
+
+    for (const remote of data.data ?? []) {
+      const status = mapMetaStatus(remote.status);
+      if (!status) continue;
+      const match = local.find(
+        (t) =>
+          (t.wabaId === wabaId || t.wabaId === null) &&
+          ((remote.id && t.waTemplateId === remote.id) ||
+            (t.name === remote.name && t.language === remote.language))
+      );
+      if (!match || match.status === status) continue;
+      await db
+        .update(schema.template)
+        .set({
+          status,
+          rejectionReason: remote.rejected_reason ?? null,
+          waTemplateId: match.waTemplateId ?? remote.id ?? null,
+          wabaId: match.wabaId ?? wabaId,
+          updatedAt: new Date(),
+        })
+        .where(eq(schema.template.id, match.id));
+      match.status = status;
+      updated += 1;
+    }
   }
   return updated;
 }
@@ -281,6 +313,7 @@ export async function applyTemplateStatusEvent(
     .where(
       and(
         eq(schema.template.organizationId, creds.organizationId),
+        or(eq(schema.template.wabaId, wabaId), isNull(schema.template.wabaId)),
         eq(schema.template.name, name),
         eq(schema.template.language, language)
       )
@@ -342,7 +375,18 @@ export async function sendTemplate(input: {
     );
   }
 
-  const creds = await getUsableCredentials(input.organizationId);
+  // Sale por el número de la conversación (F2); legado sin número → predeterminado.
+  const creds = assertUsable(
+    row.conversation.phoneNumberId
+      ? await getNumberForOrg(input.organizationId, row.conversation.phoneNumberId)
+      : await getDefaultNumber(input.organizationId)
+  );
+  if (template.wabaId && template.wabaId !== creds.wabaId) {
+    throw new TemplateError(
+      "invalid",
+      "Esa plantilla es de otra cuenta de WhatsApp (WABA) que el número de esta conversación"
+    );
+  }
 
   const waMessageId = await callGraphSend(creds, {
     messaging_product: "whatsapp",
@@ -372,6 +416,7 @@ export async function sendTemplate(input: {
       conversationId: input.conversationId,
       waMessageId,
       direction: "out",
+      origin: "template",
       type: "template",
       text: renderBody(template.body, input.variable?.trim()),
       status: "pending",

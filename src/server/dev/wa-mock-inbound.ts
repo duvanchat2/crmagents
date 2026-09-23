@@ -35,6 +35,8 @@ export function buildInboundPayload(input: {
   text?: string;
   waMessageId?: string;
   timestamp?: number;
+  /** business_scoped_user_id (BSUID) opcional, como lo envía Meta. */
+  waUserId?: string;
 }) {
   const type = input.type ?? "text";
   const message: Record<string, unknown> = {
@@ -63,6 +65,7 @@ export function buildInboundPayload(input: {
                 {
                   profile: { name: input.name ?? "Cliente" },
                   wa_id: input.from,
+                  ...(input.waUserId ? { user_id: input.waUserId } : {}),
                 },
               ],
               messages: [message],

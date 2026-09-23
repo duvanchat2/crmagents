@@ -20,7 +20,12 @@ vi.mock("@/lib/db", () => ({
       }),
     }),
   }),
-  schema: { metaCredentials: { organizationId: "organization_id" } },
+  schema: {
+    whatsappNumber: {
+      organizationId: "organization_id",
+      phoneNumberId: "phone_number_id",
+    },
+  },
 }));
 
 vi.mock("@/server/ai/pipeline", () => ({ scheduleAgentTurn }));
@@ -169,6 +174,8 @@ describe("connectionProblem", () => {
     displayPhoneNumber: null,
     verifiedName: null,
     status: "connected" as const,
+    isDefault: true,
+    enabled: true,
   };
 
   it("sin conexión → not_connected", async () => {
@@ -199,6 +206,17 @@ describe("connectionProblem", () => {
     expect(connectionProblem({ ...base, provider: "kapso", token: null }, "kapso")).toBeNull();
   });
 
+  it("número desactivado → not_connected con guía (F2)", async () => {
+    setEnv({});
+    const { connectionProblem } = await import("@/server/whatsapp/credentials");
+    const p = connectionProblem(
+      { ...base, provider: "kapso", token: null, enabled: false, verifiedName: "Sucursal Norte" },
+      "kapso"
+    );
+    expect(p?.code).toBe("not_connected");
+    expect(p?.message).toMatch(/Sucursal Norte está desactivado/);
+  });
+
   it("reconnect_required se respeta", async () => {
     setEnv({});
     const { connectionProblem } = await import("@/server/whatsapp/credentials");
@@ -211,6 +229,8 @@ describe("connectionProblem", () => {
   });
 });
 
+const NUM = { organizationId: "org_1", phoneNumberId: "pn1" };
+
 describe("handleTransportAuthError", () => {
   it("kapso: key rechazada → mensaje de KAPSO_API_KEY y NO marca la conexión", async () => {
     setEnv(KAPSO);
@@ -220,7 +240,7 @@ describe("handleTransportAuthError", () => {
     );
     const msg = await handleTransportAuthError(
       new MetaApiError("x", { status: 403 }),
-      "org_1",
+      NUM,
       "kapso"
     );
     expect(msg).toBe(KAPSO_KEY_REJECTED);
@@ -235,7 +255,7 @@ describe("handleTransportAuthError", () => {
     );
     const err = new MetaApiError("x", { status: 401, code: 190, type: "OAuthException" });
     expect(err.isApiKeyError).toBe(false);
-    expect(await handleTransportAuthError(err, "org_1", "kapso")).toBe(KAPSO_META_AUTH_FAILED);
+    expect(await handleTransportAuthError(err, NUM, "kapso")).toBe(KAPSO_META_AUTH_FAILED);
     expect(markReconnect).not.toHaveBeenCalled();
   });
 
@@ -245,7 +265,7 @@ describe("handleTransportAuthError", () => {
     const { handleTransportAuthError } = await import("@/server/whatsapp/credentials");
     const msg = await handleTransportAuthError(
       new MetaApiError("x", { status: 400, code: 190 }),
-      "org_1",
+      NUM,
       "meta"
     );
     expect(msg).toMatch(/expiró/);
@@ -257,8 +277,8 @@ describe("handleTransportAuthError", () => {
     const { MetaApiError } = await import("@/lib/meta/client");
     const { handleTransportAuthError } = await import("@/server/whatsapp/credentials");
     const err = new MetaApiError("x", { status: 500 });
-    expect(await handleTransportAuthError(err, "org_1", "meta")).toBeNull();
-    expect(await handleTransportAuthError(err, "org_1", "kapso")).toBeNull();
+    expect(await handleTransportAuthError(err, NUM, "meta")).toBeNull();
+    expect(await handleTransportAuthError(err, NUM, "kapso")).toBeNull();
   });
 });
 

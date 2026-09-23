@@ -43,6 +43,8 @@ export function ContactPanel({
   const [aiConfigured, setAiConfigured] = useState(false);
 
   const contactId = conversation.contact.id;
+  // F2: la etapa es la del lead DE ESTA conversación (un lead por número).
+  const conversationId = conversation.id;
 
   const agentReady = aiConfigured && agentEnabled;
   const aiActive =
@@ -51,7 +53,7 @@ export function ContactPanel({
   // Carga inicial (incluye notas): se re-ejecuta al cambiar de contacto.
   const refetch = useCallback(async () => {
     const [detail, stagesRes, agentRes] = await Promise.all([
-      fetch(`/api/contacts/${contactId}`).then((r) => (r.ok ? r.json() : null)),
+      fetch(`/api/contacts/${contactId}?conversationId=${conversationId}`).then((r) => (r.ok ? r.json() : null)),
       fetch("/api/pipeline/stages").then((r) => (r.ok ? r.json() : null)),
       fetch("/api/agent/profile").then((r) => (r.ok ? r.json() : null)),
     ]).catch(() => [null, null, null]);
@@ -64,13 +66,13 @@ export function ContactPanel({
     setAgentEnabled(Boolean(agentRes?.profile?.enabled));
     setAiConfigured(Boolean(agentRes?.aiConfigured));
     setNotesLoaded(true);
-  }, [contactId]);
+  }, [contactId, conversationId]);
 
   // Refetch en vivo (etapa/lead + estado del agente) SIN tocar las notas, para
   // no pisar lo que el operador esté escribiendo. Lo dispara el SSE.
   const refreshLive = useCallback(async () => {
     const [detail, agentRes] = await Promise.all([
-      fetch(`/api/contacts/${contactId}`).then((r) => (r.ok ? r.json() : null)),
+      fetch(`/api/contacts/${contactId}?conversationId=${conversationId}`).then((r) => (r.ok ? r.json() : null)),
       fetch("/api/agent/profile").then((r) => (r.ok ? r.json() : null)),
     ]).catch(() => [null, null]);
     if (detail) {
@@ -81,7 +83,7 @@ export function ContactPanel({
       setAgentEnabled(Boolean(agentRes.profile?.enabled));
       setAiConfigured(Boolean(agentRes.aiConfigured));
     }
-  }, [contactId]);
+  }, [contactId, conversationId]);
 
   useEffect(() => {
     setNotesLoaded(false);

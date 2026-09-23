@@ -13,6 +13,13 @@ export type ConversationDto = {
   windowOpen: boolean;
   windowRemainingMs: number;
   preview: string | null;
+  /** Número de WhatsApp de la conversación (F2); null en legados sin número. */
+  number: {
+    phoneNumberId: string;
+    label: string;
+    displayPhoneNumber: string | null;
+    wabaId: string;
+  } | null;
 };
 
 export type MessageDto = {
@@ -23,6 +30,7 @@ export type MessageDto = {
   text: string | null;
   status: "pending" | "sent" | "delivered" | "read" | "failed";
   aiGenerated: boolean;
+  origin: "contact" | "operator" | "hermes" | "echo" | "vocero_ai" | "template";
   createdAt: string;
 };
 
@@ -32,6 +40,8 @@ export type TemplateDto = {
   language: string;
   category: string;
   body: string;
+  /** WABA de la plantilla; las plantillas solo se envían por números de su WABA. */
+  wabaId: string | null;
   status: "draft" | "pending" | "approved" | "rejected";
   rejectionReason: string | null;
 };
@@ -47,6 +57,7 @@ export type ContactDto = {
   id: string;
   name: string;
   phone: string;
+  waUserId: string | null;
   notes: string | null;
   archivedAt: string | null;
 };

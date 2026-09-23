@@ -2,6 +2,8 @@ import { eq, inArray } from "drizzle-orm";
 import type { getDb } from "@/lib/db";
 import { schema } from "@/lib/db";
 import { newId } from "@/lib/db/ids";
+import { getDefaultNumber } from "@/server/whatsapp/credentials";
+import { normalizePhone, phoneLookupVariants } from "@/lib/phone";
 
 /**
  * Negocio de demostración "Ferretería El Martillo" (FR-075).
@@ -134,7 +136,10 @@ export async function seedDemo(
   db: Db,
   organizationId: string
 ): Promise<{ contacts: number; kbEntries: number }> {
-  const demoPhones = DEMO_CONTACTS.map((c) => c.phone);
+  // Normalizador único; la limpieza también cubre seeds previos en forma legada.
+  const demoPhones = DEMO_CONTACTS.flatMap((c) =>
+    phoneLookupVariants(normalizePhone(c.phone) ?? c.phone)
+  );
 
   // --- Idempotencia: limpiar datos demo previos (orden inverso de FKs) ---
   const prevContacts = await db
@@ -180,6 +185,7 @@ export async function seedDemo(
   if (!fallbackStage) throw new Error("La organización no tiene etapas");
 
   // --- Contactos + conversaciones + mensajes + leads ---
+  const demoNumber = await getDefaultNumber(organizationId);
   const now = Date.now();
   let position = 0;
   for (const demo of DEMO_CONTACTS) {
@@ -187,7 +193,7 @@ export async function seedDemo(
     await db.insert(schema.contact).values({
       id: contactId,
       organizationId,
-      phone: demo.phone,
+      phone: normalizePhone(demo.phone) ?? demo.phone,
       name: demo.name,
       notes: demo.notes ?? null,
     });
@@ -205,6 +211,8 @@ export async function seedDemo(
       id: conversationId,
       organizationId,
       contactId,
+      // F2: la demo cuelga del número predeterminado si ya hay uno conectado.
+      phoneNumberId: demoNumber?.phoneNumberId ?? null,
       lastInboundAt: new Date(now - lastInbound * HOURS),
       lastMessageAt: new Date(now - lastMessage * HOURS),
       unreadCount: demo.thread[demo.thread.length - 1]?.dir === "in" ? 1 : 0,
@@ -218,6 +226,7 @@ export async function seedDemo(
         conversationId,
         waMessageId: `wamid.demo.${newId("message")}`,
         direction: msg.dir,
+        origin: msg.dir === "in" ? "contact" : msg.ai ? "vocero_ai" : "operator",
         type: "text",
         text: msg.text,
         status: msg.dir === "in" ? "delivered" : "read",
@@ -231,6 +240,7 @@ export async function seedDemo(
       id: newId("lead"),
       organizationId,
       contactId,
+      conversationId,
       stageId: stageByName.get(demo.stage) ?? fallbackStage,
       position: position++,
       lastActivityAt: new Date(now - lastMessage * HOURS),

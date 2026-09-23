@@ -13,11 +13,12 @@ export const dynamic = "force-dynamic";
 
 type Params = { params: Promise<{ id: string }> };
 
-export const GET = withAuth(async (session, _req: Request, ctx: Params) => {
+export const GET = withAuth(async (session, req: Request, ctx: Params) => {
   const { id } = await ctx.params;
   const contact = await getContactById(session.organizationId, id);
   if (!contact) return apiError(404, "not_found", "Contacto no encontrado");
-  const stageRow = await getContactStage(session.organizationId, id);
+  const conversationId = new URL(req.url).searchParams.get("conversationId");
+  const stageRow = await getContactStage(session.organizationId, id, conversationId);
   return Response.json({
     contact: serializeContact(contact),
     stage: stageRow

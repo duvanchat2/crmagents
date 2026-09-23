@@ -1,4 +1,5 @@
 import { getEnv, type WhatsappProvider } from "@/lib/env";
+import { normalizePhone } from "@/lib/phone";
 
 /**
  * Cliente propio del transporte de WhatsApp (Cloud API).
@@ -163,14 +164,11 @@ function trimSlash(url: string): string {
 }
 
 /**
- * Normaliza el destinatario para el envío. Números móviles de México llegan
- * de Meta como `521` + 10 dígitos (13 en total); enviar con ese `1` extra
- * produce el error 131030 — se envía como `52` + 10 dígitos.
- * El wa_id almacenado NO se modifica; esto aplica solo al enviar.
+ * Normaliza el destinatario para el envío con el normalizador único
+ * (`lib/phone`): p. ej. México `521` + 10 dígitos → `52` + 10 dígitos (enviar
+ * con el `1` extra produce el error 131030). Si el valor no es un teléfono
+ * válido (p. ej. un BSUID), se envía tal cual.
  */
 export function normalizeRecipient(waId: string): string {
-  if (/^521\d{10}$/.test(waId)) {
-    return `52${waId.slice(3)}`;
-  }
-  return waId;
+  return normalizePhone(waId) ?? waId;
 }

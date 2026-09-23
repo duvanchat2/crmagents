@@ -16,6 +16,7 @@ const schema = z.object({
   type: z.string().optional(),
   text: z.string().optional(),
   waMessageId: z.string().optional(),
+  waUserId: z.string().optional(),
   timestamp: z.number().optional(),
 });
 

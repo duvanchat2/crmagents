@@ -1,4 +1,5 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { normalizePhone, phoneLookupVariants } from "@/lib/phone";
 import { getDb, schema } from "@/lib/db";
 import { newId } from "@/lib/db/ids";
 import { publish } from "@/server/events/bus";
@@ -20,76 +21,129 @@ const SUPPORTED_TYPES = new Set([
   "contacts",
 ]);
 
+/**
+ * Contacto único por teléfono (normalizador único de lib/phone). Busca también
+ * la forma legada guardada antes de F2 (México `521…`) para no duplicarlo, y
+ * guarda el BSUID (business_scoped_user_id) si llega y aún no lo tenía.
+ */
 export async function getOrCreateContact(
   organizationId: string,
-  phone: string,
-  name?: string | null
+  rawPhone: string,
+  name?: string | null,
+  waUserId?: string | null
 ) {
   const db = getDb();
-  const inserted = await db
-    .insert(schema.contact)
-    .values({
-      id: newId("contact"),
-      organizationId,
-      phone,
-      name: name?.trim() || phone,
-    })
-    .onConflictDoNothing({
-      target: [schema.contact.organizationId, schema.contact.phone],
-    })
-    .returning();
-  if (inserted[0]) return { contact: inserted[0], isNew: true };
+  const phone = normalizePhone(rawPhone) ?? rawPhone.trim();
 
-  const rows = await db
+  const found = await db
     .select()
     .from(schema.contact)
     .where(
       and(
         eq(schema.contact.organizationId, organizationId),
-        eq(schema.contact.phone, phone)
+        inArray(schema.contact.phone, phoneLookupVariants(phone))
       )
     )
     .limit(1);
-  const existing = rows[0];
+  let existing = found[0];
+  const isNew = false;
+
+  if (!existing) {
+    const inserted = await db
+      .insert(schema.contact)
+      .values({
+        id: newId("contact"),
+        organizationId,
+        phone,
+        waUserId: waUserId ?? null,
+        name: name?.trim() || phone,
+      })
+      .onConflictDoNothing({
+        target: [schema.contact.organizationId, schema.contact.phone],
+      })
+      .returning();
+    if (inserted[0]) return { contact: inserted[0], isNew: true };
+    const raced = await db
+      .select()
+      .from(schema.contact)
+      .where(
+        and(
+          eq(schema.contact.organizationId, organizationId),
+          eq(schema.contact.phone, phone)
+        )
+      )
+      .limit(1);
+    existing = raced[0];
+  }
   if (!existing) throw new Error("contacto no encontrado tras upsert");
 
-  // Reactivar si estaba archivado (el nombre editado por el operador se respeta).
-  if (existing.archivedAt) {
+  // Reactivar si estaba archivado (el nombre editado por el operador se
+  // respeta) y completar el BSUID si faltaba.
+  const patch: Partial<typeof schema.contact.$inferInsert> = {};
+  if (existing.archivedAt) patch.archivedAt = null;
+  if (waUserId && !existing.waUserId) patch.waUserId = waUserId;
+  if (Object.keys(patch).length > 0) {
     await db
       .update(schema.contact)
-      .set({ archivedAt: null, updatedAt: new Date() })
+      .set({ ...patch, updatedAt: new Date() })
       .where(eq(schema.contact.id, existing.id));
-    existing.archivedAt = null;
+    existing = { ...existing, ...patch } as typeof existing;
   }
-  return { contact: existing, isNew: false };
+  return { contact: existing, isNew };
 }
 
+/**
+ * Conversación real única por (organización + número + contacto). Las de
+ * prueba del Laboratorio no compiten (índice parcial is_test = false).
+ * Una conversación legada SIN número (demo sembrada antes de conectar, u
+ * organización sin conexión al migrar) se ADOPTA con el primer mensaje de
+ * ese número en vez de abrir un segundo hilo para el mismo contacto.
+ */
 export async function getOrCreateConversation(
   organizationId: string,
-  contactId: string
+  contactId: string,
+  phoneNumberId: string
 ) {
   const db = getDb();
-  const inserted = await db
-    .insert(schema.conversation)
-    .values({ id: newId("conversation"), organizationId, contactId })
-    .onConflictDoNothing()
-    .returning();
-  if (inserted[0]) return inserted[0];
+  const byNumber = and(
+    eq(schema.conversation.organizationId, organizationId),
+    eq(schema.conversation.contactId, contactId),
+    eq(schema.conversation.phoneNumberId, phoneNumberId),
+    eq(schema.conversation.isTest, false)
+  );
 
-  const rows = await db
-    .select()
-    .from(schema.conversation)
+  const existing = await db.select().from(schema.conversation).where(byNumber).limit(1);
+  if (existing[0]) return existing[0];
+
+  const adopted = await db
+    .update(schema.conversation)
+    .set({ phoneNumberId, updatedAt: new Date() })
     .where(
       and(
         eq(schema.conversation.organizationId, organizationId),
         eq(schema.conversation.contactId, contactId),
+        isNull(schema.conversation.phoneNumberId),
         eq(schema.conversation.isTest, false)
       )
     )
-    .limit(1);
-  const existing = rows[0];
-  if (!existing) throw new Error("conversación no encontrada tras upsert");
-  return existing;
+    .returning();
+  if (adopted[0]) return adopted[0];
+
+  const inserted = await db
+    .insert(schema.conversation)
+    .values({
+      id: newId("conversation"),
+      organizationId,
+      contactId,
+      phoneNumberId,
+    })
+    .onConflictDoNothing()
+    .returning();
+  if (inserted[0]) return inserted[0];
+
+  const raced = await db.select().from(schema.conversation).where(byNumber).limit(1);
+  if (!raced[0]) throw new Error("conversación no encontrada tras upsert");
+  return raced[0];
 }
 
 /**
@@ -101,6 +155,12 @@ export async function processMessagesValue(value: WebhookValue): Promise<void> {
   if (!phoneNumberId) return;
 
   const credentials = await getCredentialsByPhoneNumberId(phoneNumberId);
+  if (credentials && !credentials.enabled) {
+    console.warn(
+      `[webhook] evento para un número desactivado (${phoneNumberId}): actívalo en Configuración → WhatsApp`
+    );
+    return;
+  }
   if (!credentials) {
     // Caso típico: webhook/override configurado ANTES de guardar la conexión
     // en el wizard — el evento llega pero no hay a qué organización enrutarlo.
@@ -119,13 +179,13 @@ export async function processMessagesValue(value: WebhookValue): Promise<void> {
 
   for (const msg of value.messages ?? []) {
     if (!SUPPORTED_TYPES.has(msg.type)) continue; // reacciones, etc.: ignorar
-    const profileName = value.contacts?.find(
-      (c) => c.wa_id === msg.from
-    )?.profile?.name;
+    const waContact = value.contacts?.find((c) => c.wa_id === msg.from);
     await ingestInboundMessage({
       organizationId,
+      phoneNumberId,
       from: msg.from,
-      profileName: profileName ?? null,
+      waUserId: msg.from_user_id ?? waContact?.user_id ?? null,
+      profileName: waContact?.profile?.name ?? null,
       waMessageId: msg.id,
       type: msg.type,
       text: msg.text?.body ?? null,
@@ -136,7 +196,10 @@ export async function processMessagesValue(value: WebhookValue): Promise<void> {
 
 export async function ingestInboundMessage(input: {
   organizationId: string;
+  /** Número de la instancia que recibió el mensaje. */
+  phoneNumberId: string;
   from: string;
+  waUserId?: string | null;
   profileName: string | null;
   waMessageId: string;
   type: string;
@@ -149,11 +212,13 @@ export async function ingestInboundMessage(input: {
   const { contact } = await getOrCreateContact(
     organizationId,
     input.from,
-    input.profileName
+    input.profileName,
+    input.waUserId
   );
   const conversation = await getOrCreateConversation(
     organizationId,
-    contact.id
+    contact.id,
+    input.phoneNumberId
   );
 
   const waTimestamp = toDate(input.timestamp);
@@ -167,6 +232,7 @@ export async function ingestInboundMessage(input: {
       conversationId: conversation.id,
       waMessageId: input.waMessageId,
       direction: "in",
+      origin: "contact",
       type: input.type,
       text: input.text,
       status: "delivered",
@@ -187,7 +253,7 @@ export async function ingestInboundMessage(input: {
     })
     .where(eq(schema.conversation.id, conversation.id));
 
-  await onLeadActivity(organizationId, contact.id, waTimestamp);
+  await onLeadActivity(organizationId, conversation, waTimestamp);
 
   publish(organizationId, {
     type: "message.new",
@@ -216,6 +282,7 @@ export function serializeMessage(m: typeof schema.message.$inferSelect) {
     text: m.text,
     status: m.status,
     aiGenerated: m.aiGenerated,
+    origin: m.origin,
     createdAt: (m.waTimestamp ?? m.createdAt).toISOString(),
   };
 }

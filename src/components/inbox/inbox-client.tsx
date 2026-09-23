@@ -11,6 +11,7 @@ import { ConversationList } from "./conversation-list";
 import { MessageThread } from "./message-thread";
 import { Composer } from "./composer";
 import { ContactPanel } from "./contact-panel";
+import { NewChatDialog, type InboxNumber } from "./new-chat-dialog";
 
 export function InboxClient() {
   const [conversations, setConversations] = useState<ConversationDto[] | null>(
@@ -19,6 +20,9 @@ export function InboxClient() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [messages, setMessages] = useState<MessageDto[]>([]);
   const [panelOpen, setPanelOpen] = useState(true);
+  // null = cargando (el diálogo de chat nuevo espera el predeterminado).
+  const [numbers, setNumbers] = useState<InboxNumber[] | null>(null);
+  const [newChatOpen, setNewChatOpen] = useState(false);
   // Se incrementa con cada evento SSE que puede cambiar la etapa/lead o el
   // estado del agente: el panel de detalles lo observa y refetch en vivo.
   const [detailRev, setDetailRev] = useState(0);
@@ -55,6 +59,14 @@ export function InboxClient() {
     void refetchConversations();
   }, [refetchConversations]);
 
+  // Números activos de la organización (F2): filtro, etiqueta y chat nuevo.
+  useEffect(() => {
+    fetch("/api/numbers")
+      .then((r) => (r.ok ? r.json() : { numbers: [] }))
+      .then((d: { numbers?: InboxNumber[] }) => setNumbers(d.numbers ?? []))
+      .catch(() => setNumbers([]));
+  }, []);
+
   const select = useCallback(
     (id: string) => {
       setSelectedId(id);
@@ -69,14 +81,20 @@ export function InboxClient() {
     [refetchMessages]
   );
 
-  // Enlace directo desde Contactos/Pipeline: /inbox?contact=<id>
+  // Enlace directo desde Pipeline (/inbox?conversation=<id>, exacto: un lead
+  // por número) o Contactos (/inbox?contact=<id>, su conversación más reciente).
   const searchParams = useSearchParams();
   const contactParam = searchParams.get("contact");
+  const conversationParam = searchParams.get("conversation");
   useEffect(() => {
-    if (!contactParam || selectedIdRef.current) return;
-    const match = conversations?.find((c) => c.contact.id === contactParam);
+    if (selectedIdRef.current) return;
+    const match = conversationParam
+      ? conversations?.find((c) => c.id === conversationParam)
+      : contactParam
+        ? conversations?.find((c) => c.contact.id === contactParam)
+        : undefined;
     if (match) select(match.id);
-  }, [contactParam, conversations, select]);
+  }, [contactParam, conversationParam, conversations, select]);
 
   useEvents({
     onMessageNew: ({ conversationId, message }) => {
@@ -158,12 +176,30 @@ export function InboxClient() {
 
   return (
     <div className="flex h-full">
+      {newChatOpen && (
+        <NewChatDialog
+          numbers={numbers}
+          onClose={() => setNewChatOpen(false)}
+          onCreated={(conversation) => {
+            setNewChatOpen(false);
+            setConversations((prev) =>
+              prev?.some((c) => c.id === conversation.id)
+                ? prev
+                : [conversation, ...(prev ?? [])]
+            );
+            select(conversation.id);
+            void refetchConversations();
+          }}
+        />
+      )}
       <section className="w-[360px] shrink-0 overflow-hidden border-r">
         <ConversationList
           conversations={conversations}
+          numbers={numbers ?? []}
           selectedId={selectedId}
           onSelect={select}
           onSeeded={() => void refetchConversations()}
+          onNewChat={() => setNewChatOpen(true)}
         />
       </section>
 
@@ -191,6 +227,12 @@ export function InboxClient() {
                     {selected.windowOpen
                       ? "ventana abierta"
                       : `+${selected.contact.phone}`}
+                    {selected.number && (
+                      <span className="text-text-3" data-testid="thread-number">
+                        {" · vía "}
+                        {selected.number.label}
+                      </span>
+                    )}
                   </p>
                 </div>
               </div>

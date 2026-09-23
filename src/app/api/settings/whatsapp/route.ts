@@ -2,8 +2,10 @@ import { z } from "zod";
 import { apiError, parseBody, withAuth } from "@/lib/api";
 import { getEnv, getWhatsappProvider } from "@/lib/env";
 import {
-  getCredentialsByOrg,
+  listNumbers,
+  NumberTakenError,
   saveCredentials,
+  serializeNumber,
   tokenLast4,
 } from "@/server/whatsapp/credentials";
 import { subscribeAppToWaba, testConnection } from "@/server/whatsapp/connect";
@@ -20,32 +22,27 @@ function transportInfo() {
   };
 }
 
+/** Números de la organización (F2: varios; el predeterminado primero). */
 export const GET = withAuth(async (session) => {
-  const creds = await getCredentialsByOrg(session.organizationId);
-  const transport = transportInfo();
-  if (!creds) return Response.json({ ...transport, connection: null });
+  const numbers = await listNumbers(session.organizationId);
   return Response.json({
-    ...transport,
-    connection: {
-      wabaId: creds.wabaId,
-      phoneNumberId: creds.phoneNumberId,
-      displayPhoneNumber: creds.displayPhoneNumber,
-      verifiedName: creds.verifiedName,
-      status: creds.status,
-      provider: creds.provider,
-      tokenLast4: tokenLast4(creds.token),
-    },
+    ...transportInfo(),
+    numbers: numbers.map(serializeNumber),
   });
 });
 
 const putSchema = z.object({
-  wabaId: z.string().trim().min(1),
+  /** En kapso puede venir vacío: la WABA real la informa Kapso al validar. */
+  wabaId: z.string().trim().optional(),
   phoneNumberId: z.string().trim().min(1),
   /** Obligatorio en meta; en kapso se ignora (API key de instancia). */
   token: z.string().trim().min(1).optional(),
 });
 
-/** Guarda la conexión: re-valida contra el transporte, cifra y suscribe (FR-040). */
+/**
+ * Agrega (o reconecta) un número: re-valida contra el transporte, cifra el
+ * token (meta) y lo guarda. El primero de la organización queda predeterminado.
+ */
 export const PUT = withAuth(async (session, req: Request) => {
   const body = await parseBody(req, putSchema);
   if (!body.ok) return body.response;
@@ -62,22 +59,34 @@ export const PUT = withAuth(async (session, req: Request) => {
     return apiError(status, check.code, check.message);
   }
 
-  await saveCredentials({
-    organizationId: session.organizationId,
-    // Kapso informa la WABA real del número: prevalece sobre la tecleada.
-    wabaId: check.wabaId ?? body.data.wabaId,
-    phoneNumberId: body.data.phoneNumberId,
-    provider,
-    token: token ?? null,
-    displayPhoneNumber: check.displayPhoneNumber,
-    verifiedName: check.verifiedName,
-  });
+  const wabaId = check.wabaId || body.data.wabaId; // Kapso informa la WABA real
+  if (!wabaId) {
+    return apiError(422, "invalid", "Falta el WABA ID (ID de la cuenta de WhatsApp Business)");
+  }
+  let saved;
+  try {
+    saved = await saveCredentials({
+      organizationId: session.organizationId,
+      wabaId,
+      phoneNumberId: body.data.phoneNumberId,
+      provider,
+      token: token ?? null,
+      displayPhoneNumber: check.displayPhoneNumber,
+      verifiedName: check.verifiedName,
+    });
+  } catch (err) {
+    if (err instanceof NumberTakenError) {
+      return apiError(409, "number_taken", err.message);
+    }
+    throw err;
+  }
 
   // Best-effort: necesaria en modo directo; el modo agencia usa su override.
-  await subscribeAppToWaba(check.wabaId ?? body.data.wabaId, token ?? null);
+  await subscribeAppToWaba(wabaId, token ?? null);
 
   return Response.json({
     ok: true,
     displayPhoneNumber: check.displayPhoneNumber,
+    number: serializeNumber(saved),
   });
 });

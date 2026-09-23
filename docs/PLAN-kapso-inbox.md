@@ -1,6 +1,6 @@
 # Plan: Kapso como transporte de WhatsApp en Vocero
 
-> Estado: **v3 aprobada**. F0 completada (constitución 1.3.0) y F1 completada.
+> Estado: **v3 aprobada**. F0 (constitución 1.3.0), F1 y F2 completadas.
 > Incorpora las decisiones del dueño (§0.1) y lo verificado en docs.kapso.ai (§8).
 > Enmienda de la constitución que la habilita:
 > [`docs/ENMIENDA-constitucion-II-kapso.md`](./ENMIENDA-constitucion-II-kapso.md).
@@ -328,7 +328,12 @@ licencia MIT cubre el código, no el uso del servicio.
   - key `-invalid` → error claro sin colgarse;
   - una conversación `is_test` sigue lanzando excepción.
 
-**F2: multi-número y modelo de datos**
+**F2: multi-número y modelo de datos** ✅ (rama `feat/f2-multinumero`; guion `tests/e2e/us-f2-multinumero.md`; migración y rollback en `specs/003-kapso-transporte/migracion-0002.md`)
+- *Desviaciones*:
+  - las columnas de media pasan a F5, donde se usan;
+  - los teléfonos existentes **no** se reescriben: la búsqueda contempla la
+    forma legada `521` de México (`phoneLookupVariants`) para que la migración
+    no pueda chocar ni fusionar datos.
 - Migraciones:
   - `whatsapp_number` (reemplaza a `meta_credentials`, con copia idempotente);
   - `conversation.phone_number_id` y el nuevo único parcial;

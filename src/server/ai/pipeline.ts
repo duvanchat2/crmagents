@@ -1,4 +1,4 @@
-import { asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq } from "drizzle-orm";
 import { getDb, schema } from "@/lib/db";
 import { newId } from "@/lib/db/ids";
 import { getEnv, isAiConfigured } from "@/lib/env";
@@ -171,7 +171,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     if (!stage) {
       action = degradeAction(action);
     } else {
-      await moveLeadToStage(organizationId, conversation.contactId, stage.id);
+      await moveLeadToStage(organizationId, conversation.id, stage.id);
       publish(organizationId, {
         type: "conversation.updated",
         data: { conversation: { id: conversationId } },
@@ -242,6 +242,7 @@ async function persistTestOutbound(
     organizationId: conversation.organizationId,
     conversationId: conversation.id,
     direction: "out",
+    origin: "vocero_ai",
     type: "text",
     text,
     status: "sent",
@@ -273,16 +274,22 @@ export async function applyHandoff(
   });
 }
 
+/** Mueve el lead DE ESTA conversación (F2: un lead por número + teléfono). */
 async function moveLeadToStage(
   organizationId: string,
-  contactId: string,
+  conversationId: string,
   stageId: string
 ): Promise<void> {
   const db = getDb();
   await db
     .update(schema.lead)
     .set({ stageId, updatedAt: new Date(), lastActivityAt: new Date() })
-    .where(eq(schema.lead.contactId, contactId));
+    .where(
+      and(
+        eq(schema.lead.organizationId, organizationId),
+        eq(schema.lead.conversationId, conversationId)
+      )
+    );
 }
 
 async function appendLeadNote(
