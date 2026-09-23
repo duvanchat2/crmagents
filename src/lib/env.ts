@@ -8,7 +8,8 @@ import { z } from "zod";
  * que en esa fase se aceptan placeholders — los valores reales llegan al boot.
  */
 
-const envSchema = z.object({
+/** Exportado para el check de paridad con docker-compose.yml (tests/unit). */
+export const envSchema = z.object({
   APP_BASE_URL: z.string().url(),
   DATABASE_URL: z.string().min(1),
   BETTER_AUTH_SECRET: z.string().min(16),

@@ -14,6 +14,14 @@ services:
       META_WEBHOOK_VERIFY_TOKEN: ${META_WEBHOOK_VERIFY_TOKEN}
       META_APP_SECRET: ${META_APP_SECRET:-}
       META_GRAPH_API_VERSION: ${META_GRAPH_API_VERSION:-v25.0}
+      # Transporte de WhatsApp: meta (default) | kapso — ver .env.example
+      WHATSAPP_PROVIDER: ${WHATSAPP_PROVIDER:-meta}
+      KAPSO_API_KEY: ${KAPSO_API_KEY:-}
+      KAPSO_WHATSAPP_API_URL: ${KAPSO_WHATSAPP_API_URL:-https://api.kapso.ai/meta/whatsapp}
+      KAPSO_GRAPH_API_VERSION: ${KAPSO_GRAPH_API_VERSION:-v24.0}
+      KAPSO_API_BASE_URL: ${KAPSO_API_BASE_URL:-https://api.kapso.ai}
+      # Vacío = derivado del transporte (kapso → hermes, meta → vocero)
+      AGENT_ENGINE: ${AGENT_ENGINE:-}
       OPENROUTER_API_TOKEN: ${OPENROUTER_API_TOKEN:-}
       OPENROUTER_BASE_URL: ${OPENROUTER_BASE_URL:-https://openrouter.ai/api}
       OPENROUTER_MODEL: ${OPENROUTER_MODEL:-}
