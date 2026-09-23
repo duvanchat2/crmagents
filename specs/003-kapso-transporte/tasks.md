@@ -30,21 +30,29 @@ Estado durable del loop SDD: marcar al cerrar cada tarea (con verificación E2E)
 
 ## F2: multi-número y modelo de datos
 
-- [ ] K020 Migraciones: `whatsapp_number`, `conversation.phone_number_id`,
-  `lead.conversation_id`, `template.waba_id`, `contact.wa_user_id`,
-  `message.origin` + columnas de media
-- [ ] K021 Descubrimiento de números en Configuración (seleccionar y elegir el
-  predeterminado)
-- [ ] K022 Envío por el número de la conversación; filtro y etiqueta de número
-  en la bandeja
-- [ ] K023 Chat nuevo (D9): número predeterminado + selector; fuera de 24 h
-  solo plantilla (UI y servidor)
+- [X] K020 Migración `0002`: `whatsapp_number` (copia de `meta_credentials`,
+  que se conserva), `conversation.phone_number_id`, `lead.conversation_id`,
+  `template.waba_id`, `contact.wa_user_id`, `message.origin`, sin pérdida de
+  datos, con migración inversa probada (`migracion-0002.md`).
+  *Desviación*: las columnas de media pasan a F5, donde se usan.
+- [X] K021 Descubrimiento de números en Configuración (Kapso), alta con token
+  (Meta), predeterminado y activar/desactivar
+- [X] K022 Envío por el número de la conversación (meta y kapso); filtro y
+  etiqueta de número en bandeja y pipeline; plantillas por WABA
+- [X] K023 Chat nuevo (D9): predeterminado preseleccionado + selector; fuera de
+  24 h solo plantilla (UI y servidor)
+- [X] K024 Normalizador único de teléfono (`lib/phone`: MX 521→52, CO 57) + BSUID
+- [X] K025 Self-test E2E `tests/e2e/us-f2-multinumero.md`: Kapso con 2
+  números, conversación legada, actualización real desde main (meta) y rollback
 
 ## F3: ingesta de Kapso por el webhook actual
 
 - [ ] K030 Capa de firma `X-Webhook-Signature` (`KAPSO_WEBHOOK_SECRET`)
 - [ ] K031 `inbound_event` (dedup por `X-Idempotency-Key`)
 - [ ] K032 Insert saliente idempotente frente a la carrera eco ↔ envío
+- [ ] K035 Entrantes solo con BSUID (sin teléfono): buscar el contacto por
+  `wa_user_id` antes de usar el teléfono (hoy un BSUID sin teléfono se guardaría
+  como `phone`)
 - [ ] K033 `LAB_ENABLED=false` (D8)
 - [ ] K034 Confirmar los ecos de Hermes en `kind=meta` (P3); si no llegan,
   agregar el webhook `whatsapp.message.sent`
@@ -52,6 +60,6 @@ Estado durable del loop SDD: marcar al cerrar cada tarea (con verificación E2E)
 ## F4–F7
 
 - [ ] K040 Handoff = pausa de Hermes (requiere P4)
-- [ ] K050 UI portada de Kapso + multimedia (D7)
+- [ ] K050 UI portada de Kapso + multimedia (D7) + columnas de media en `message`
 - [ ] K060 Limpieza (`meta_credentials`, `ai_generated`, docs de deploy)
 - [ ] K070 Futuro: Laboratorio ↔ Hermes, herramientas de Hermes sobre el CRM

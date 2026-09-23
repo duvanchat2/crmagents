@@ -6,7 +6,8 @@ import { publish } from "@/server/events/bus";
 import { getWhatsappProvider } from "@/lib/env";
 import {
   connectionProblem,
-  getCredentialsByOrg,
+  getDefaultNumber,
+  getNumberForOrg,
   handleTransportAuthError,
   transportLabel,
   type Credentials,
@@ -78,7 +79,11 @@ export async function sendText(input: {
     );
   }
 
-  const credentials = await getSendableCredentials(input.organizationId);
+  // Sale por el número de la conversación (F2), en meta y en kapso.
+  const credentials = await getSendableCredentials(
+    input.organizationId,
+    row.conversation.phoneNumberId
+  );
 
   const waMessageId = await callGraphSend(credentials, {
     messaging_product: "whatsapp",
@@ -95,6 +100,7 @@ export async function sendText(input: {
       conversationId: input.conversationId,
       waMessageId,
       direction: "out",
+      origin: input.aiGenerated ? "vocero_ai" : "operator",
       type: "text",
       text: input.text,
       status: "pending",
@@ -120,13 +126,18 @@ export async function sendText(input: {
 }
 
 /**
- * Conexión lista para enviar por el transporte activo, o SendError con el
- * motivo (sin número, transporte distinto, token vencido).
+ * Número listo para enviar por el transporte activo, o SendError con el
+ * motivo (sin número, desactivado, transporte distinto, token vencido).
+ * Con phoneNumberId usa ESE número de la organización (el de la
+ * conversación); sin él (conversación legada sin número), el predeterminado.
  */
 export async function getSendableCredentials(
-  organizationId: string
+  organizationId: string,
+  phoneNumberId?: string | null
 ): Promise<Credentials> {
-  const credentials = await getCredentialsByOrg(organizationId);
+  const credentials = phoneNumberId
+    ? await getNumberForOrg(organizationId, phoneNumberId)
+    : await getDefaultNumber(organizationId);
   const problem = connectionProblem(credentials);
   if (problem) throw new SendError(problem.code, problem.message);
   return credentials!;
@@ -147,10 +158,7 @@ export async function callGraphSend(
     return id;
   } catch (err) {
     if (err instanceof MetaApiError) {
-      const authMessage = await handleTransportAuthError(
-        err,
-        credentials.organizationId
-      );
+      const authMessage = await handleTransportAuthError(err, credentials);
       if (authMessage) throw new SendError("reconnect_required", authMessage);
       if (err.status === 0 || err.status >= 500) {
         throw new SendError(

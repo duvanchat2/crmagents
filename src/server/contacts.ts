@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { desc, eq } from "drizzle-orm";
 import { getDb, schema } from "@/lib/db";
 import { scoped } from "@/lib/db/tenant";
 
@@ -7,6 +7,7 @@ export function serializeContact(c: typeof schema.contact.$inferSelect) {
     id: c.id,
     name: c.name,
     phone: c.phone,
+    waUserId: c.waUserId,
     notes: c.notes,
     archivedAt: c.archivedAt?.toISOString() ?? null,
   };
@@ -31,10 +32,15 @@ export async function getContactById(
   return rows[0] ?? null;
 }
 
-/** Etapa actual del lead del contacto (si existe). */
+/**
+ * Etapa del lead del contacto. Con conversationId, la del lead DE ESA
+ * conversación (F2: un contacto puede tener un lead por número); sin él, la
+ * del lead más reciente del contacto.
+ */
 export async function getContactStage(
   organizationId: string,
-  contactId: string
+  contactId: string,
+  conversationId?: string | null
 ) {
   const db = getDb();
   const rows = await db
@@ -48,9 +54,11 @@ export async function getContactStage(
       scoped(
         schema.lead.organizationId,
         organizationId,
-        eq(schema.lead.contactId, contactId)
+        eq(schema.lead.contactId, contactId),
+        conversationId ? eq(schema.lead.conversationId, conversationId) : undefined
       )
     )
+    .orderBy(desc(schema.lead.updatedAt))
     .limit(1);
   return rows[0] ?? null;
 }

@@ -194,6 +194,7 @@ async function runConversation(
       organizationId,
       conversationId: convId,
       direction: "in",
+      origin: "contact",
       type: "text",
       text: line,
       status: "delivered",

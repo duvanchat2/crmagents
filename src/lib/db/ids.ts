@@ -11,6 +11,7 @@ const prefixes = {
   lead: "ld",
   stage: "stg",
   credentials: "cred",
+  whatsappNumber: "wn",
   agentProfile: "agp",
   kbEntry: "kb",
   template: "tpl",

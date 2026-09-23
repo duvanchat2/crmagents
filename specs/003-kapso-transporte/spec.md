@@ -4,7 +4,7 @@
 
 **Created**: 2026-09-23
 
-**Status**: En curso (F0 ✅, F1 ✅, F2–F7 pendientes)
+**Status**: En curso (F0 ✅, F1 ✅, F2 ✅, F3–F7 pendientes)
 
 **Input**: Reemplazar la capa de WhatsApp directa por Kapso como transporte, con
 Hermes Agent (en Kapso) como cerebro y Vocero como CRM y fuente de verdad. El
@@ -73,3 +73,27 @@ guía hasta reconectar.
   reales.
 - **FR-K06**: la API key nunca llega al cliente ni a los logs; la UI muestra
   solo los últimos 4 caracteres.
+
+### US3 (F2): varios números por organización (P1)
+
+Como operador, conecto varios números: los descubro en Kapso o los agrego con su
+token en modo Meta. Cada conversación queda ligada al número por el que llegó y
+**las respuestas salen por ese mismo número**. Elijo un número predeterminado,
+que se preselecciona al iniciar un chat nuevo.
+
+- **FR-K10**: un contacto por teléfono. El teléfono pasa por el normalizador
+  único (`lib/phone`), y el contacto guarda también el `business_scoped_user_id`
+  (BSUID).
+- **FR-K11**: una conversación y un lead por (organización + `phone_number_id`
+  + teléfono).
+- **FR-K12**: el envío de texto y de plantillas usa el número de la
+  conversación, en modo meta y en modo kapso. Las plantillas son por WABA y solo
+  se envían por números de su WABA.
+- **FR-K13**: chat nuevo con el número predeterminado preseleccionado. Fuera de
+  la ventana de 24 h solo se permite plantilla, y lo exigen tanto la UI como el
+  servidor.
+- **FR-K14**: desactivar un número conserva el número y su historial, pero deja
+  de ingerir entrantes y de enviar.
+- **FR-K15**: la migración no pierde datos (`meta_credentials` se copia y se
+  conserva) y tiene migración inversa probada.
+

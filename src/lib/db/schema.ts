@@ -111,7 +111,10 @@ export const contact = pgTable(
     organizationId: text("organization_id")
       .notNull()
       .references(() => organization.id, { onDelete: "cascade" }),
+    /** Teléfono canónico (lib/phone.normalizePhone): único por organización. */
     phone: text("phone").notNull(),
+    /** business_scoped_user_id de Meta (BSUID): identificador secundario. */
+    waUserId: text("wa_user_id"),
     name: text("name").notNull(),
     notes: text("notes"),
     archivedAt: timestamp("archived_at"),
@@ -121,6 +124,7 @@ export const contact = pgTable(
   (t) => [
     uniqueIndex("contact_org_phone_uq").on(t.organizationId, t.phone),
     index("contact_org_name_idx").on(t.organizationId, t.name),
+    index("contact_org_wa_user_idx").on(t.organizationId, t.waUserId),
   ]
 );
 
@@ -152,6 +156,14 @@ export const lead = pgTable(
     contactId: text("contact_id")
       .notNull()
       .references(() => contact.id, { onDelete: "cascade" }),
+    /**
+     * Conversación real del lead: un lead por (organización + número +
+     * teléfono). NULL solo en leads creados sin conversación (se adoptan con el
+     * primer entrante del contacto).
+     */
+    conversationId: text("conversation_id").references(() => conversation.id, {
+      onDelete: "set null",
+    }),
     stageId: text("stage_id")
       .notNull()
       .references(() => pipelineStage.id),
@@ -161,7 +173,8 @@ export const lead = pgTable(
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
   },
   (t) => [
-    uniqueIndex("lead_contact_uq").on(t.contactId),
+    uniqueIndex("lead_conversation_uq").on(t.conversationId),
+    index("lead_org_contact_idx").on(t.organizationId, t.contactId),
     index("lead_org_stage_idx").on(t.organizationId, t.stageId, t.position),
   ]
 );
@@ -176,6 +189,11 @@ export const conversation = pgTable(
     contactId: text("contact_id")
       .notNull()
       .references(() => contact.id, { onDelete: "cascade" }),
+    /**
+     * Número de WhatsApp de la conversación (whatsapp_number.phone_number_id).
+     * NULL en conversaciones del Laboratorio y en datos legados sin número.
+     */
+    phoneNumberId: text("phone_number_id"),
     /** Conversación del Laboratorio: jamás toca la API de WhatsApp. */
     isTest: boolean("is_test").notNull().default(false),
     aiEnabled: boolean("ai_enabled").notNull().default(true),
@@ -190,9 +208,12 @@ export const conversation = pgTable(
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
   },
   (t) => [
-    // Una conversación real por contacto; las de prueba no compiten.
-    uniqueIndex("conversation_org_contact_real_uq")
-      .on(t.organizationId, t.contactId)
+    // Una conversación real por (organización + número + contacto/teléfono);
+    // las de prueba no compiten.
+    // coalesce: un phone_number_id NULL (legado) cuenta como un valor más, no
+    // como "distinto" (Postgres trata los NULL como distintos en UNIQUE).
+    uniqueIndex("conversation_org_number_contact_real_uq")
+      .on(t.organizationId, sql`coalesce(${t.phoneNumberId}, '')`, t.contactId)
       .where(sql`${t.isTest} = false`),
     index("conversation_org_last_idx").on(t.organizationId, t.lastMessageAt),
   ]
@@ -220,6 +241,10 @@ export const message = pgTable(
       .default("pending"),
     error: text("error"),
     aiGenerated: boolean("ai_generated").notNull().default(false),
+    /** Quién originó el mensaje (F2). ai_generated queda por compatibilidad (F6). */
+    origin: text("origin", {
+      enum: ["contact", "operator", "hermes", "echo", "vocero_ai", "template"],
+    }).notNull(),
     waTimestamp: timestamp("wa_timestamp"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
@@ -261,6 +286,47 @@ export const metaCredentials = pgTable(
     uniqueIndex("meta_credentials_org_uq").on(t.organizationId),
     // El webhook enruta por phone_number_id: debe ser único en la instancia.
     uniqueIndex("meta_credentials_phone_uq").on(t.phoneNumberId),
+  ]
+);
+
+/**
+ * Números de WhatsApp de la organización (F2): reemplaza a meta_credentials,
+ * que se conserva intacta hasta F6 como respaldo de la migración.
+ */
+export const whatsappNumber = pgTable(
+  "whatsapp_number",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    provider: text("provider", { enum: ["meta", "kapso"] }).notNull(),
+    phoneNumberId: text("phone_number_id").notNull(),
+    wabaId: text("waba_id").notNull(),
+    displayPhoneNumber: text("display_phone_number"),
+    verifiedName: text("verified_name"),
+    /** Token cifrado del número: obligatorio en meta; NULL en kapso. */
+    tokenCipher: text("token_cipher"),
+    tokenIv: text("token_iv"),
+    tokenTag: text("token_tag"),
+    status: text("status", { enum: ["connected", "reconnect_required"] })
+      .notNull()
+      .default("connected"),
+    isDefault: boolean("is_default").notNull().default(false),
+    /** false = el operador dejó de atenderlo (se conserva por el historial). */
+    enabled: boolean("enabled").notNull().default(true),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (t) => [
+    // El webhook enruta por phone_number_id: único en la instancia.
+    uniqueIndex("whatsapp_number_phone_uq").on(t.phoneNumberId),
+    // A lo sumo un número predeterminado por organización.
+    uniqueIndex("whatsapp_number_org_default_uq")
+      .on(t.organizationId)
+      .where(sql`${t.isDefault} = true`),
+    index("whatsapp_number_org_idx").on(t.organizationId),
+    index("whatsapp_number_waba_idx").on(t.wabaId),
   ]
 );
 
@@ -307,6 +373,8 @@ export const template = pgTable(
     organizationId: text("organization_id")
       .notNull()
       .references(() => organization.id, { onDelete: "cascade" }),
+    /** WABA a la que pertenece la plantilla (las plantillas son por WABA). */
+    wabaId: text("waba_id"),
     name: text("name").notNull(),
     language: text("language").notNull(),
     category: text("category").notNull(),
@@ -322,8 +390,9 @@ export const template = pgTable(
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
   },
   (t) => [
-    uniqueIndex("template_org_name_lang_uq").on(
+    uniqueIndex("template_org_waba_name_lang_uq").on(
       t.organizationId,
+      t.wabaId,
       t.name,
       t.language
     ),

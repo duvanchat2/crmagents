@@ -16,14 +16,27 @@ import { Label } from "@/components/ui/label";
 
 type Provider = "meta" | "kapso";
 
-type Connection = {
-  wabaId: string;
+type NumberItem = {
+  id: string;
   phoneNumberId: string;
+  wabaId: string;
   displayPhoneNumber: string | null;
   verifiedName: string | null;
-  status: "connected" | "reconnect_required";
+  label: string;
   provider: Provider;
+  status: "connected" | "reconnect_required";
+  isDefault: boolean;
+  enabled: boolean;
   tokenLast4: string | null;
+  problem: string | null;
+};
+
+type AvailableNumber = {
+  phoneNumberId: string;
+  wabaId: string | null;
+  displayPhoneNumber: string | null;
+  verifiedName: string | null;
+  state: "available" | "connected" | "taken";
 };
 
 type Transport = { provider: Provider; apiKeyLast4: string | null };
@@ -38,7 +51,7 @@ type WebhookInfo = {
 };
 
 export function WhatsappWizard() {
-  const [connection, setConnection] = useState<Connection | null>(null);
+  const [numbers, setNumbers] = useState<NumberItem[]>([]);
   const [transport, setTransport] = useState<Transport>({
     provider: "meta",
     apiKeyLast4: null,
@@ -52,7 +65,7 @@ export function WhatsappWizard() {
       fetch("/api/settings/webhook").then((r) => (r.ok ? r.json() : null)),
     ]).catch(() => [null, null]);
     if (c) {
-      setConnection(c.connection);
+      setNumbers(c.numbers ?? []);
       setTransport({ provider: c.provider ?? "meta", apiKeyLast4: c.apiKeyLast4 ?? null });
     }
     if (w) setWebhook(w);
@@ -63,65 +76,66 @@ export function WhatsappWizard() {
     void refetch();
   }, [refetch]);
 
+  async function patchNumber(id: string, patch: { isDefault?: true; enabled?: boolean }) {
+    const res = await fetch(`/api/settings/whatsapp/numbers/${id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(patch),
+    }).catch(() => null);
+    const data = (await res?.json().catch(() => null)) as { numbers?: NumberItem[] } | null;
+    if (data?.numbers) setNumbers(data.numbers);
+    else void refetch();
+  }
+
   if (!loaded) {
     return <p className="text-sm text-muted-foreground">Cargando…</p>;
   }
 
-  const providerMismatch =
-    connection !== null && connection.provider !== transport.provider;
+  const mismatched = numbers.filter((n) => n.enabled && n.provider !== transport.provider);
 
   return (
     <div className="max-w-3xl space-y-6">
-      {providerMismatch && connection && (
+      {mismatched.length > 0 && (
         <div className="flex items-start gap-2 rounded-lg border border-[#ece2cf] bg-[#faf7f0] p-4 text-sm">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-[#8a6d3b]" />
           <div>
             <p className="font-medium text-[#8a6d3b]">
-              La conexión guardada es de {PROVIDER_LABEL[connection.provider]}, pero
+              La conexión guardada es de {PROVIDER_LABEL[mismatched[0]!.provider]}, pero
               esta instancia usa {PROVIDER_LABEL[transport.provider]}.
             </p>
             <p className="text-[#8a6d3b]/80">
-              Los envíos están pausados hasta que vuelvas a conectar el número abajo.
+              Los envíos por {mismatched.length === 1 ? "ese número" : "esos números"} están
+              pausados hasta que los vuelvas a conectar abajo.
             </p>
           </div>
         </div>
       )}
 
-      {!providerMismatch && connection?.status === "reconnect_required" && (
+      {numbers.some((n) => n.status === "reconnect_required" && n.provider === transport.provider) && (
         <div className="flex items-start gap-2 rounded-lg border border-[#ecd4d2] bg-[#faf1f0] p-4 text-sm">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
           <div>
             <p className="font-medium text-[#a2504c]">
-              El token de WhatsApp expiró o fue revocado.
+              El token de WhatsApp de un número expiró o fue revocado.
             </p>
             <p className="text-[#a2504c]/80">
-              Los envíos están pausados. Pega un token nuevo abajo y prueba la
-              conexión para reconectar.
+              Los envíos por ese número están pausados. Pega un token nuevo abajo y
+              prueba la conexión para reconectar.
             </p>
           </div>
         </div>
       )}
 
-      {connection && !providerMismatch && connection.status === "connected" && (
-        <div className="flex items-center gap-3 rounded-lg border border-[#d8e8dd] bg-[#eff7f1] p-4">
-          <CheckCircle2 className="h-5 w-5 text-success" />
-          <div className="flex-1 text-sm">
-            <p className="font-medium text-[#3f6b52]">
-              Número conectado: {connection.displayPhoneNumber ?? connection.phoneNumberId}
-            </p>
-            <p className="text-[#3f6b52]/80">
-              {connection.verifiedName ? `${connection.verifiedName} · ` : ""}
-              {connection.provider === "kapso"
-                ? `vía Kapso · API key …${transport.apiKeyLast4 ?? "????"}`
-                : `token …${connection.tokenLast4 ?? "????"}`}
-            </p>
-          </div>
-          <Badge variant="success">Conectado</Badge>
-        </div>
+      {numbers.length > 0 && (
+        <NumbersCard numbers={numbers} transport={transport} onPatch={patchNumber} />
+      )}
+
+      {transport.provider === "kapso" && (
+        <KapsoDiscoveryCard onConnected={() => void refetch()} />
       )}
 
       <ConnectForm
-        existing={connection}
+        hasNumbers={numbers.length > 0}
         transport={transport}
         onSaved={() => void refetch()}
       />
@@ -131,20 +145,192 @@ export function WhatsappWizard() {
   );
 }
 
+function NumbersCard({
+  numbers,
+  transport,
+  onPatch,
+}: {
+  numbers: NumberItem[];
+  transport: Transport;
+  onPatch: (id: string, patch: { isDefault?: true; enabled?: boolean }) => Promise<void>;
+}) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Números conectados</CardTitle>
+        <CardDescription>
+          Cada conversación sale por el número por el que llegó. El
+          predeterminado se preselecciona al iniciar un chat nuevo. Desactivar
+          un número no borra su historial.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <ul className="divide-y rounded-md border" data-testid="numbers-list">
+          {numbers.map((n) => (
+            <li
+              key={n.id}
+              className="flex flex-wrap items-center gap-3 px-4 py-3"
+              data-testid="number-row"
+              data-phone-number-id={n.phoneNumberId}
+            >
+              {n.enabled && !n.problem ? (
+                <CheckCircle2 className="h-5 w-5 shrink-0 text-success" />
+              ) : (
+                <AlertTriangle className="h-5 w-5 shrink-0 text-[#8a6d3b]" />
+              )}
+              <div className="min-w-0 flex-1 text-sm">
+                <p className="font-medium">
+                  Número conectado: {n.displayPhoneNumber ?? n.phoneNumberId}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {n.verifiedName ? `${n.verifiedName} · ` : ""}
+                  {n.provider === "kapso"
+                    ? `vía Kapso · API key …${transport.apiKeyLast4 ?? "????"}`
+                    : `token …${n.tokenLast4 ?? "????"}`}
+                  {` · WABA ${n.wabaId}`}
+                </p>
+                {n.problem && n.enabled && (
+                  <p className="mt-0.5 text-xs text-[#8a6d3b]">{n.problem}</p>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                {n.isDefault && <Badge variant="success">Predeterminado</Badge>}
+                {!n.enabled && <Badge>Desactivado</Badge>}
+                {n.enabled && !n.isDefault && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => void onPatch(n.id, { isDefault: true })}
+                  >
+                    Hacer predeterminado
+                  </Button>
+                )}
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => void onPatch(n.id, { enabled: !n.enabled })}
+                >
+                  {n.enabled ? "Desactivar" : "Activar"}
+                </Button>
+              </div>
+            </li>
+          ))}
+        </ul>
+      </CardContent>
+    </Card>
+  );
+}
+
+function KapsoDiscoveryCard({ onConnected }: { onConnected: () => void }) {
+  const [items, setItems] = useState<AvailableNumber[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setError(null);
+    const res = await fetch("/api/settings/whatsapp/available").catch(() => null);
+    const data = (await res?.json().catch(() => null)) as {
+      numbers?: AvailableNumber[];
+      error?: { message?: string };
+    } | null;
+    if (!res?.ok || !data?.numbers) {
+      setError(data?.error?.message ?? "No se pudo consultar Kapso");
+      setItems([]);
+      return;
+    }
+    setItems(data.numbers);
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  async function connect(n: AvailableNumber) {
+    setBusy(n.phoneNumberId);
+    setError(null);
+    const res = await fetch("/api/settings/whatsapp", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ phoneNumberId: n.phoneNumberId, wabaId: n.wabaId ?? "" }),
+    }).catch(() => null);
+    setBusy(null);
+    if (!res?.ok) {
+      const data = (await res?.json().catch(() => null)) as {
+        error?: { message?: string };
+      } | null;
+      setError(data?.error?.message ?? "No se pudo conectar el número");
+      return;
+    }
+    await load();
+    onConnected();
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Números de tu cuenta de Kapso</CardTitle>
+        <CardDescription>
+          Elige qué números atiende esta organización. Los conectas en
+          app.kapso.ai; aquí solo decides cuáles entran a Vocero.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        {items === null ? (
+          <p className="text-sm text-muted-foreground">Consultando Kapso…</p>
+        ) : items.length === 0 && !error ? (
+          <p className="text-sm text-muted-foreground">
+            Tu cuenta de Kapso no tiene números conectados.
+          </p>
+        ) : (
+          <ul className="divide-y rounded-md border" data-testid="kapso-available">
+            {items.map((n) => (
+              <li
+                key={n.phoneNumberId}
+                className="flex items-center gap-3 px-4 py-2.5 text-sm"
+                data-phone-number-id={n.phoneNumberId}
+              >
+                <div className="min-w-0 flex-1">
+                  <p className="font-medium">{n.displayPhoneNumber ?? n.phoneNumberId}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {n.verifiedName ?? "Sin nombre verificado"} · {n.phoneNumberId}
+                  </p>
+                </div>
+                {n.state === "connected" ? (
+                  <Badge variant="success">En esta organización</Badge>
+                ) : n.state === "taken" ? (
+                  <Badge>En otra organización</Badge>
+                ) : (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={busy !== null}
+                    onClick={() => void connect(n)}
+                  >
+                    {busy === n.phoneNumberId ? "Conectando…" : "Conectar"}
+                  </Button>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+        {error && <p className="text-sm text-destructive">{error}</p>}
+      </CardContent>
+    </Card>
+  );
+}
+
 function ConnectForm({
-  existing,
+  hasNumbers,
   transport,
   onSaved,
 }: {
-  existing: Connection | null;
+  hasNumbers: boolean;
   transport: Transport;
   onSaved: () => void;
 }) {
   const isKapso = transport.provider === "kapso";
-  const [wabaId, setWabaId] = useState(existing?.wabaId ?? "");
-  const [phoneNumberId, setPhoneNumberId] = useState(
-    existing?.phoneNumberId ?? ""
-  );
+  const [wabaId, setWabaId] = useState("");
+  const [phoneNumberId, setPhoneNumberId] = useState("");
   const [token, setToken] = useState("");
   const [testResult, setTestResult] = useState<
     | { ok: true; display: string }
@@ -209,6 +395,8 @@ function ConnectForm({
     }
     setToken("");
     setTestResult(null);
+    setPhoneNumberId("");
+    setWabaId("");
     onSaved();
   }
 
@@ -216,7 +404,7 @@ function ConnectForm({
     <Card>
       <CardHeader>
         <CardTitle>
-          {existing ? "Reconectar / actualizar el número" : "Conectar tu número de WhatsApp"}
+          {hasNumbers ? "Agregar o reconectar un número" : "Conectar tu número de WhatsApp"}
         </CardTitle>
         <CardDescription>
           {isKapso
@@ -273,7 +461,10 @@ function ConnectForm({
               id="phone-number-id"
               placeholder="ID del número de teléfono"
               value={phoneNumberId}
-              onChange={(e) => setPhoneNumberId(e.target.value)}
+              onChange={(e) => {
+                setPhoneNumberId(e.target.value);
+                setTestResult(null); // el resultado era de otro número
+              }}
             />
           </div>
         </div>
@@ -283,7 +474,7 @@ function ConnectForm({
           <Input
             id="token"
             type="password"
-            placeholder={existing ? `Guardado (…${existing.tokenLast4}) — pega uno nuevo para cambiarlo` : "EAAG…"}
+            placeholder="EAAG…"
             value={token}
             onChange={(e) => {
               setToken(e.target.value);

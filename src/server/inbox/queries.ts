@@ -2,6 +2,7 @@ import { and, desc, eq, gt, sql } from "drizzle-orm";
 import { getDb, schema } from "@/lib/db";
 import { scoped } from "@/lib/db/tenant";
 import { isWindowOpen, windowRemainingMs } from "@/server/inbox/window";
+import { numberLabel } from "@/server/whatsapp/credentials";
 
 export type ConversationDto = {
   id: string;
@@ -16,7 +17,28 @@ export type ConversationDto = {
   windowOpen: boolean;
   windowRemainingMs: number;
   preview: string | null;
+  /** Número de WhatsApp de la conversación (F2); null en legados sin número. */
+  number: ConversationNumberDto | null;
 };
+
+export type ConversationNumberDto = {
+  phoneNumberId: string;
+  label: string;
+  displayPhoneNumber: string | null;
+  wabaId: string;
+};
+
+type NumberRow = typeof schema.whatsappNumber.$inferSelect;
+
+function serializeNumber(n: NumberRow | null): ConversationNumberDto | null {
+  if (!n) return null;
+  return {
+    phoneNumberId: n.phoneNumberId,
+    label: numberLabel(n),
+    displayPhoneNumber: n.displayPhoneNumber,
+    wabaId: n.wabaId,
+  };
+}
 
 export async function listConversations(
   organizationId: string,
@@ -30,10 +52,11 @@ export async function listConversations(
     order by m.created_at desc
     limit 1
   )`;
+  // Etapa del lead DE ESTA conversación (F2: un lead por número + teléfono).
   const stageSql = sql<string | null>`(
     select s.name from lead l
     join pipeline_stage s on s.id = l.stage_id
-    where l.contact_id = ${schema.contact.id}
+    where l.conversation_id = ${schema.conversation.id}
     limit 1
   )`;
 
@@ -43,11 +66,16 @@ export async function listConversations(
       contact: schema.contact,
       preview: previewSql,
       stageName: stageSql,
+      number: schema.whatsappNumber,
     })
     .from(schema.conversation)
     .innerJoin(
       schema.contact,
       eq(schema.conversation.contactId, schema.contact.id)
+    )
+    .leftJoin(
+      schema.whatsappNumber,
+      eq(schema.conversation.phoneNumberId, schema.whatsappNumber.phoneNumberId)
     )
     .where(
       scoped(
@@ -60,7 +88,7 @@ export async function listConversations(
     .orderBy(desc(sql`coalesce(${schema.conversation.lastMessageAt}, ${schema.conversation.createdAt})`));
 
   return rows.map((r) =>
-    serializeConversation(r.conversation, r.contact, r.preview, r.stageName)
+    serializeConversation(r.conversation, r.contact, r.preview, r.stageName, r.number)
   );
 }
 
@@ -70,11 +98,19 @@ export async function getConversation(
 ) {
   const db = getDb();
   const rows = await db
-    .select({ conversation: schema.conversation, contact: schema.contact })
+    .select({
+      conversation: schema.conversation,
+      contact: schema.contact,
+      number: schema.whatsappNumber,
+    })
     .from(schema.conversation)
     .innerJoin(
       schema.contact,
       eq(schema.conversation.contactId, schema.contact.id)
+    )
+    .leftJoin(
+      schema.whatsappNumber,
+      eq(schema.conversation.phoneNumberId, schema.whatsappNumber.phoneNumberId)
     )
     .where(
       scoped(
@@ -111,7 +147,8 @@ export function serializeConversation(
   c: typeof schema.conversation.$inferSelect,
   contact: typeof schema.contact.$inferSelect,
   preview: string | null = null,
-  stageName: string | null = null
+  stageName: string | null = null,
+  number: NumberRow | null = null
 ): ConversationDto {
   return {
     id: c.id,
@@ -126,6 +163,7 @@ export function serializeConversation(
     windowOpen: isWindowOpen(c.lastInboundAt),
     windowRemainingMs: windowRemainingMs(c.lastInboundAt),
     preview,
+    number: serializeNumber(number),
   };
 }
 

@@ -41,6 +41,8 @@ export function isValidSignature(
 
 export type WebhookMessage = {
   from: string;
+  /** business_scoped_user_id (BSUID) del remitente, si Meta lo envía. */
+  from_user_id?: string;
   id: string;
   timestamp: string;
   type: string;
@@ -58,7 +60,7 @@ export type WebhookStatus = {
 export type WebhookValue = {
   messaging_product?: string;
   metadata?: { display_phone_number?: string; phone_number_id?: string };
-  contacts?: { profile?: { name?: string }; wa_id?: string }[];
+  contacts?: { profile?: { name?: string }; wa_id?: string; user_id?: string }[];
   messages?: WebhookMessage[];
   statuses?: WebhookStatus[];
   // message_template_status_update

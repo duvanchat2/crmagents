@@ -10,11 +10,19 @@ import { Label } from "@/components/ui/label";
  * Selector de plantilla aprobada para conversaciones con ventana cerrada
  * (FR-005/FR-051). Sin plantillas aprobadas muestra el estado vacío.
  */
+/** Una plantilla sirve para un número si es de su WABA (o es legada sin WABA). */
+export function templateFitsWaba(t: TemplateDto, wabaId: string | null): boolean {
+  return !t.wabaId || !wabaId || t.wabaId === wabaId;
+}
+
 export function TemplateSender({
   conversationId,
+  wabaId,
   onSent,
 }: {
   conversationId: string;
+  /** WABA del número de la conversación (F2): filtra las plantillas. */
+  wabaId: string | null;
   onSent: () => void;
 }) {
   const [templates, setTemplates] = useState<TemplateDto[] | null>(null);
@@ -30,7 +38,9 @@ export function TemplateSender({
       .then((d: { templates?: TemplateDto[] }) => {
         if (!cancelled) {
           setTemplates(
-            (d.templates ?? []).filter((t) => t.status === "approved")
+            (d.templates ?? []).filter(
+              (t) => t.status === "approved" && templateFitsWaba(t, wabaId)
+            )
           );
         }
       })
@@ -40,7 +50,7 @@ export function TemplateSender({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [wabaId]);
 
   if (templates === null) {
     return <p className="text-xs text-muted-foreground">Cargando plantillas…</p>;

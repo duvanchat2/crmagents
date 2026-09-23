@@ -28,6 +28,8 @@ export type BoardLead = {
   lastActivityAt: string | null;
   contact: { id: string; name: string; phone: string };
   conversationId: string | null;
+  /** Número de WhatsApp por el que llegó el lead (F2). */
+  numberLabel: string | null;
 };
 
 export function PipelineClient() {
@@ -185,10 +187,18 @@ function LeadCard({ lead, overlay = false }: { lead: BoardLead; overlay?: boolea
               ? `Actividad: ${formatTime(lead.lastActivityAt)}`
               : "Sin actividad"}
           </p>
+          {lead.numberLabel && (
+            <p
+              className="truncate text-[11px] text-text-3"
+              data-testid="lead-number"
+            >
+              vía {lead.numberLabel}
+            </p>
+          )}
         </div>
         {lead.conversationId && (
           <Link
-            href={`/inbox?contact=${lead.contact.id}`}
+            href={`/inbox?conversation=${lead.conversationId}`}
             onPointerDown={(e) => e.stopPropagation()}
             aria-label="Abrir conversación"
             className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"

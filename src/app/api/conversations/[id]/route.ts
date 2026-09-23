@@ -23,7 +23,13 @@ export const PATCH = withAuth(async (session, req: Request, ctx: Params) => {
 
   const row = await getConversation(session.organizationId, id);
   if (row) {
-    const dto = serializeConversation(row.conversation, row.contact);
+    const dto = serializeConversation(
+      row.conversation,
+      row.contact,
+      null,
+      null,
+      row.number
+    );
     publish(session.organizationId, {
       type: "conversation.updated",
       data: { conversation: dto },

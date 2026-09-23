@@ -1,12 +1,13 @@
 "use client";
 
 import { useState } from "react";
-import { Search, Sparkles, UserRound } from "lucide-react";
+import { Phone, Plus, Search, Sparkles, UserRound } from "lucide-react";
 import type { ConversationDto } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { ContactAvatar } from "@/components/avatar";
 import { Button } from "@/components/ui/button";
 import { formatTime, previewText } from "./helpers";
+import type { InboxNumber } from "./new-chat-dialog";
 
 const STAGE_DOT: Record<string, string> = {
   Nuevo: "#9ca3af",
@@ -54,20 +55,31 @@ function EmptyState({ onSeeded }: { onSeeded: () => void }) {
 
 export function ConversationList({
   conversations: conversationsProp,
+  numbers,
   selectedId,
   onSelect,
   onSeeded,
+  onNewChat,
 }: {
   conversations: ConversationDto[] | null;
+  /** Números activos de la organización (F2). */
+  numbers: InboxNumber[];
   selectedId: string | null;
   onSelect: (id: string) => void;
   onSeeded: () => void;
+  onNewChat: () => void;
 }) {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<"all" | "unread">("all");
+  const [numberFilter, setNumberFilter] = useState<string>("all");
+  const multiNumber = numbers.length > 1;
 
   const loading = conversationsProp === null;
-  const conversations = conversationsProp ?? [];
+  const allConversations = conversationsProp ?? [];
+  const conversations =
+    multiNumber && numberFilter !== "all"
+      ? allConversations.filter((c) => c.number?.phoneNumberId === numberFilter)
+      : allConversations;
   const q = query.trim().toLowerCase();
   const searched = q
     ? conversations.filter(
@@ -84,10 +96,33 @@ export function ConversationList({
   return (
     <div className="flex h-full flex-col">
       <header className="border-b px-4 pb-3 pt-4">
-        <div className="mb-3 flex items-baseline gap-2">
+        <div className="mb-3 flex items-center gap-2">
           <h2 className="text-[17px] font-[650] tracking-tight">Bandeja</h2>
           <span className="text-sm text-text-3">{conversations.length}</span>
+          <button
+            onClick={onNewChat}
+            aria-label="Nueva conversación"
+            title="Nueva conversación"
+            className="ml-auto flex h-7 w-7 items-center justify-center rounded-md border text-text-2 hover:bg-accent hover:text-foreground"
+          >
+            <Plus className="h-4 w-4" strokeWidth={1.8} />
+          </button>
         </div>
+        {multiNumber && (
+          <select
+            aria-label="Filtrar por número"
+            value={numberFilter}
+            onChange={(e) => setNumberFilter(e.target.value)}
+            className="mb-2 flex h-8 w-full rounded-md border border-input bg-card px-2 text-[12.5px] text-text-2 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          >
+            <option value="all">Todos los números</option>
+            {numbers.map((n) => (
+              <option key={n.phoneNumberId} value={n.phoneNumberId}>
+                {n.label}
+              </option>
+            ))}
+          </select>
+        )}
         <div className="flex items-center gap-2 rounded-md border bg-secondary px-3 py-[7px] transition-colors focus-within:border-brand focus-within:bg-background focus-within:ring-[3px] focus-within:ring-brand-soft">
           <Search className="h-4 w-4 shrink-0 text-text-3" strokeWidth={1.7} />
           <input
@@ -132,7 +167,7 @@ export function ConversationList({
       <div className="flex-1 overflow-y-auto">
         {loading ? (
           <p className="p-6 text-center text-xs text-text-3">Cargando…</p>
-        ) : conversations.length === 0 ? (
+        ) : allConversations.length === 0 ? (
           <EmptyState onSeeded={onSeeded} />
         ) : visible.length === 0 ? (
           <p className="p-6 text-center text-xs text-text-3">
@@ -205,6 +240,16 @@ export function ConversationList({
                               }}
                             />
                             {c.stageName}
+                          </span>
+                        )}
+                        {multiNumber && c.number && (
+                          <span
+                            data-testid="conversation-number"
+                            className="inline-flex max-w-[140px] items-center gap-1 truncate rounded-full border bg-background px-2 py-0.5 text-[11px] text-text-3"
+                            title={c.number.displayPhoneNumber ?? c.number.label}
+                          >
+                            <Phone className="h-3 w-3 shrink-0" strokeWidth={1.7} />
+                            <span className="truncate">{c.number.label}</span>
                           </span>
                         )}
                         {c.handoffAt && (
