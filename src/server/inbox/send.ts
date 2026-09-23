@@ -3,9 +3,12 @@ import { getDb, schema } from "@/lib/db";
 import { newId } from "@/lib/db/ids";
 import { graphRequest, MetaApiError, normalizeRecipient } from "@/lib/meta/client";
 import { publish } from "@/server/events/bus";
+import { getWhatsappProvider } from "@/lib/env";
 import {
+  connectionProblem,
   getCredentialsByOrg,
-  markReconnectRequired,
+  handleTransportAuthError,
+  transportLabel,
   type Credentials,
 } from "@/server/whatsapp/credentials";
 import { isWindowOpen } from "@/server/inbox/window";
@@ -75,16 +78,7 @@ export async function sendText(input: {
     );
   }
 
-  const credentials = await getCredentialsByOrg(input.organizationId);
-  if (!credentials) {
-    throw new SendError("not_connected", "No hay número de WhatsApp conectado");
-  }
-  if (credentials.status === "reconnect_required") {
-    throw new SendError(
-      "reconnect_required",
-      "El token de WhatsApp expiró: reconecta el número en Configuración"
-    );
-  }
+  const credentials = await getSendableCredentials(input.organizationId);
 
   const waMessageId = await callGraphSend(credentials, {
     messaging_product: "whatsapp",
@@ -125,7 +119,20 @@ export async function sendText(input: {
   return { messageId: message.id };
 }
 
-/** Llama a Graph /messages y traduce errores de Meta a SendError. */
+/**
+ * Conexión lista para enviar por el transporte activo, o SendError con el
+ * motivo (sin número, transporte distinto, token vencido).
+ */
+export async function getSendableCredentials(
+  organizationId: string
+): Promise<Credentials> {
+  const credentials = await getCredentialsByOrg(organizationId);
+  const problem = connectionProblem(credentials);
+  if (problem) throw new SendError(problem.code, problem.message);
+  return credentials!;
+}
+
+/** Llama a /messages del transporte activo y traduce sus errores a SendError. */
 export async function callGraphSend(
   credentials: Credentials,
   payload: unknown
@@ -136,19 +143,20 @@ export async function callGraphSend(
       { method: "POST", token: credentials.token, body: payload }
     );
     const id = res.messages?.[0]?.id;
-    if (!id) throw new SendError("meta_error", "Meta no devolvió ID de mensaje");
+    if (!id) throw new SendError("meta_error", "El transporte no devolvió ID de mensaje");
     return id;
   } catch (err) {
     if (err instanceof MetaApiError) {
-      if (err.isAuthError) {
-        await markReconnectRequired(credentials.organizationId);
-        throw new SendError(
-          "reconnect_required",
-          "El token de WhatsApp expiró: reconecta el número en Configuración"
-        );
-      }
+      const authMessage = await handleTransportAuthError(
+        err,
+        credentials.organizationId
+      );
+      if (authMessage) throw new SendError("reconnect_required", authMessage);
       if (err.status === 0 || err.status >= 500) {
-        throw new SendError("meta_unavailable", "Meta no está disponible ahora");
+        throw new SendError(
+          "meta_unavailable",
+          `${transportLabel(getWhatsappProvider())} no está disponible ahora`
+        );
       }
       throw new SendError("meta_error", err.message);
     }

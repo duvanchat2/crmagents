@@ -3,6 +3,8 @@ import { getDb, schema } from "@/lib/db";
 import { newId } from "@/lib/db/ids";
 import { decryptSecret, encryptSecret } from "@/lib/crypto";
 import { scoped } from "@/lib/db/tenant";
+import { getWhatsappProvider, type WhatsappProvider } from "@/lib/env";
+import type { MetaApiError } from "@/lib/meta/client";
 
 export type Credentials = {
   id: string;
@@ -12,7 +14,10 @@ export type Credentials = {
   displayPhoneNumber: string | null;
   verifiedName: string | null;
   status: "connected" | "reconnect_required";
-  token: string;
+  /** Transporte con el que se guardó la conexión. */
+  provider: "meta" | "kapso";
+  /** Token del número (modo meta). NULL en conexiones kapso. */
+  token: string | null;
 };
 
 type Row = typeof schema.metaCredentials.$inferSelect;
@@ -26,11 +31,15 @@ function toCredentials(row: Row): Credentials {
     displayPhoneNumber: row.displayPhoneNumber,
     verifiedName: row.verifiedName,
     status: row.status,
-    token: decryptSecret({
-      cipher: row.tokenCipher,
-      iv: row.tokenIv,
-      tag: row.tokenTag,
-    }),
+    provider: row.provider,
+    token:
+      row.tokenCipher && row.tokenIv && row.tokenTag
+        ? decryptSecret({
+            cipher: row.tokenCipher,
+            iv: row.tokenIv,
+            tag: row.tokenTag,
+          })
+        : null,
   };
 }
 
@@ -76,12 +85,22 @@ export async function saveCredentials(input: {
   organizationId: string;
   wabaId: string;
   phoneNumberId: string;
-  token: string;
+  provider: "meta" | "kapso";
+  /** Obligatorio en meta; en kapso no se guarda token (API key de instancia). */
+  token?: string | null;
   displayPhoneNumber?: string | null;
   verifiedName?: string | null;
 }): Promise<void> {
   const db = getDb();
-  const enc = encryptSecret(input.token);
+  if (input.provider === "meta" && !input.token) {
+    throw new Error("saveCredentials: el modo meta requiere token");
+  }
+  const enc = input.token ? encryptSecret(input.token) : null;
+  const tokenColumns = {
+    tokenCipher: enc?.cipher ?? null,
+    tokenIv: enc?.iv ?? null,
+    tokenTag: enc?.tag ?? null,
+  };
   await db
     .insert(schema.metaCredentials)
     .values({
@@ -91,9 +110,8 @@ export async function saveCredentials(input: {
       phoneNumberId: input.phoneNumberId,
       displayPhoneNumber: input.displayPhoneNumber ?? null,
       verifiedName: input.verifiedName ?? null,
-      tokenCipher: enc.cipher,
-      tokenIv: enc.iv,
-      tokenTag: enc.tag,
+      provider: input.provider,
+      ...tokenColumns,
       status: "connected",
     })
     .onConflictDoUpdate({
@@ -103,9 +121,8 @@ export async function saveCredentials(input: {
         phoneNumberId: input.phoneNumberId,
         displayPhoneNumber: input.displayPhoneNumber ?? null,
         verifiedName: input.verifiedName ?? null,
-        tokenCipher: enc.cipher,
-        tokenIv: enc.iv,
-        tokenTag: enc.tag,
+        provider: input.provider,
+        ...tokenColumns,
         status: "connected",
         updatedAt: new Date(),
       },
@@ -124,6 +141,73 @@ export async function markReconnectRequired(
 }
 
 /** Últimos 4 caracteres del token para mostrar en UI (jamás el token). */
-export function tokenLast4(token: string): string {
-  return token.slice(-4);
+export function tokenLast4(token: string): string;
+export function tokenLast4(token: string | null): string | null;
+export function tokenLast4(token: string | null): string | null {
+  return token ? token.slice(-4) : null;
+}
+
+export function transportLabel(provider: WhatsappProvider): string {
+  return provider === "kapso" ? "Kapso" : "Meta";
+}
+
+export type ConnectionProblem = {
+  code: "not_connected" | "reconnect_required";
+  message: string;
+};
+
+/**
+ * ¿Sirve la conexión guardada para el transporte activo? null = se puede
+ * enviar. Cubre el cambio de WHATSAPP_PROVIDER en una instancia existente:
+ * una conexión de otro transporte (o una meta sin token) no se usa.
+ */
+export function connectionProblem(
+  creds: Credentials | null,
+  provider: WhatsappProvider = getWhatsappProvider()
+): ConnectionProblem | null {
+  if (!creds) {
+    return { code: "not_connected", message: "No hay número de WhatsApp conectado" };
+  }
+  if (creds.provider !== provider || (provider === "meta" && !creds.token)) {
+    return {
+      code: "not_connected",
+      message:
+        `La conexión guardada es de ${transportLabel(creds.provider)} pero la instancia usa ` +
+        `${transportLabel(provider)}: vuelve a conectar el número en Configuración → WhatsApp`,
+    };
+  }
+  if (creds.status === "reconnect_required") {
+    return {
+      code: "reconnect_required",
+      message: "El token de WhatsApp expiró: reconecta el número en Configuración",
+    };
+  }
+  return null;
+}
+
+export const KAPSO_KEY_REJECTED =
+  "Kapso rechazó la API key: revisa KAPSO_API_KEY en el entorno de la instancia";
+
+export const KAPSO_META_AUTH_FAILED =
+  "Kapso no pudo autenticarse con Meta para este número: reconéctalo en app.kapso.ai";
+
+/**
+ * Traduce un error de autenticación del transporte. En meta el token del
+ * número venció → se marca reconnect_required. En kapso la API key es de
+ * instancia (.env): no se marca la conexión, se informa qué revisar.
+ * Devuelve null si el error no es de autenticación.
+ */
+export async function handleTransportAuthError(
+  err: MetaApiError,
+  organizationId: string,
+  provider: WhatsappProvider = getWhatsappProvider()
+): Promise<string | null> {
+  if (provider === "kapso") {
+    if (err.isApiKeyError) return KAPSO_KEY_REJECTED;
+    if (err.isMetaOAuthError) return KAPSO_META_AUTH_FAILED;
+    return null;
+  }
+  if (!err.isAuthError) return null;
+  await markReconnectRequired(organizationId);
+  return "El token de WhatsApp expiró: reconecta el número en Configuración";
 }

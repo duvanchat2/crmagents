@@ -1,6 +1,6 @@
 # Plan: Kapso como transporte de WhatsApp en Vocero
 
-> Estado: **v3 aprobada**. F0 completada (constitución 1.3.0) y F1 en curso.
+> Estado: **v3 aprobada**. F0 completada (constitución 1.3.0) y F1 completada.
 > Incorpora las decisiones del dueño (§0.1) y lo verificado en docs.kapso.ai (§8).
 > Enmienda de la constitución que la habilita:
 > [`docs/ENMIENDA-constitucion-II-kapso.md`](./ENMIENDA-constitucion-II-kapso.md).
@@ -302,7 +302,7 @@ licencia MIT cubre el código, no el uso del servicio.
   propagada a `CLAUDE.md`).
 - P1, P2 y la firma resueltos (§8.1).
 
-**F1: transporte dual (salida)**
+**F1: transporte dual (salida)** ✅ (rama `feat/f1-transporte-kapso`; guion `tests/e2e/us-f1-kapso-transporte.md`, 29/29)
 - `WHATSAPP_PROVIDER=meta|kapso`, `KAPSO_API_KEY`, `KAPSO_WHATSAPP_API_URL`,
   `KAPSO_API_BASE_URL`, validadas con Zod (en modo `kapso` la API key es
   obligatoria).
@@ -362,6 +362,11 @@ licencia MIT cubre el código, no el uso del servicio.
 - `AGENT_ENGINE=hermes` (valor por defecto con `kapso`): el agente interno no
   se ejecuta en conversaciones reales. `LAB_ENABLED=false`: el Laboratorio se
   oculta de la navegación y su API responde 404 (D8).
+- **Carrera eco ↔ envío propio**: el eco de un mensaje que envió Vocero puede
+  llegar **antes** de que se guarde la fila saliente. El insert del envío debe
+  ser idempotente por `wa_message_id` (`ON CONFLICT` → completar la fila del
+  eco), no un 500. El riesgo apareció en el self-test de F1 con ids repetidos
+  del mock.
 - Ecos de Hermes (P3): confirmar con un número real. Si no llegan, agregar el
   segundo webhook `whatsapp.message.sent` (§8.2).
 - E2E:

@@ -1,6 +1,7 @@
 import { mockGuard } from "@/lib/dev-guard";
 import {
   getWaMockState,
+  mockWamid,
   nextN,
   type MockTemplate,
 } from "@/server/dev/wa-mock-state";
@@ -8,7 +9,8 @@ import {
 /**
  * Imitación de la Graph API (contrato mocks.md). El cliente real apunta aquí
  * cuando META_GRAPH_BASE_URL = <app>/api/dev/wa-mock/graph — el código de
- * producción no sabe que habla con un mock.
+ * producción no sabe que habla con un mock. También imita el proxy de Kapso
+ * (KAPSO_WHATSAPP_API_URL = la misma URL): mismas rutas, auth por X-API-Key.
  */
 export const dynamic = "force-dynamic";
 
@@ -17,6 +19,22 @@ type Params = { params: Promise<{ path: string[] }> };
 function bearerToken(req: Request): string {
   const h = req.headers.get("authorization") ?? "";
   return h.startsWith("Bearer ") ? h.slice(7) : "";
+}
+
+/** Credencial presentada (token de Meta o API key de Kapso) y su tipo. */
+function credential(req: Request): { value: string; auth: "bearer" | "api-key" | "none" } {
+  const apiKey = req.headers.get("x-api-key");
+  if (apiKey) return { value: apiKey, auth: "api-key" };
+  const token = bearerToken(req);
+  return { value: token, auth: token ? "bearer" : "none" };
+}
+
+/** Sufijo -invalid → 401 con la forma de error del transporte imitado. */
+function rejected(auth: "bearer" | "api-key" | "none"): Response {
+  if (auth === "api-key") {
+    return Response.json({ error: "Invalid API key" }, { status: 401 });
+  }
+  return invalidTokenResponse();
 }
 
 function invalidTokenResponse(): Response {
@@ -42,8 +60,8 @@ export async function GET(req: Request, ctx: Params) {
   const guard = mockGuard();
   if (guard) return guard;
   const path = normalizePath((await ctx.params).path);
-  const token = bearerToken(req);
-  if (token.endsWith("-invalid")) return invalidTokenResponse();
+  const cred = credential(req);
+  if (cred.value.endsWith("-invalid")) return rejected(cred.auth);
 
   // GET {wabaId}/message_templates → lista para el sync
   if (path.length === 2 && path[1] === "message_templates") {
@@ -76,8 +94,8 @@ export async function POST(req: Request, ctx: Params) {
   const guard = mockGuard();
   if (guard) return guard;
   const path = normalizePath((await ctx.params).path);
-  const token = bearerToken(req);
-  if (token.endsWith("-invalid")) return invalidTokenResponse();
+  const cred = credential(req);
+  if (cred.value.endsWith("-invalid")) return rejected(cred.auth);
 
   const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
 
@@ -91,12 +109,13 @@ export async function POST(req: Request, ctx: Params) {
       to: String(body.to ?? ""),
       type: String(body.type ?? "text"),
       body,
+      auth: cred.auth,
       at: new Date().toISOString(),
     });
     return Response.json({
       messaging_product: "whatsapp",
       contacts: [{ input: body.to, wa_id: body.to }],
-      messages: [{ id: `wamid.mock.out.${n}` }],
+      messages: [{ id: mockWamid("out", n) }],
     });
   }
 
@@ -129,8 +148,8 @@ export async function POST(req: Request, ctx: Params) {
 export async function DELETE(req: Request, ctx: Params) {
   const guard = mockGuard();
   if (guard) return guard;
-  const token = bearerToken(req);
-  if (token.endsWith("-invalid")) return invalidTokenResponse();
+  const cred = credential(req);
+  if (cred.value.endsWith("-invalid")) return rejected(cred.auth);
   await ctx.params;
   return Response.json({ success: true });
 }
