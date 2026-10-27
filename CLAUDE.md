@@ -32,6 +32,7 @@ externas: el trabajo en segundo plano (agente, Laboratorio) es in-process.
 | Campos/tablas | `src/lib/db/schema.ts` → `pnpm db:generate` → migración nueva en `drizzle/` |
 | La ingesta/envío de mensajes | `src/server/inbox/` (ingest idempotente, send con guard de sandbox, ventana 24h) |
 | UI | `src/components/` + `src/app/(app)/` |
+| La llamada automática de confirmación (servicio aparte, en su propio VPS) | `voice-confirm/` (LiveKit + SIP Zadarma + agente de voz; ver su README) |
 
 Los mocks del entorno de pruebas viven en `src/app/api/dev/` (wa-mock +
 ai-mock) tras un gate único (`src/lib/dev-guard.ts`): 404 incondicional en
@@ -122,4 +123,5 @@ repo ya registra. Los subagentes con `memory: project` usan
    `loop-sdd`).
 2. **Subagentes** (`.claude/agents/`): `deploy-ops` (deploy/logs/healthchecks,
    no escribe código de app) · `public-site-builder` (páginas públicas/legales
-   y config de paneles externos).
+   y config de paneles externos) · `voice-vps-ops` (instala y opera
+   `voice-confirm/` en el VPS por SSH; no escribe código).
