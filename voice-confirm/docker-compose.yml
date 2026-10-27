@@ -1,0 +1,102 @@
+# Genix · llamada automática de confirmación (servicio aparte de Vocero CRM).
+#
+# Todo usa la red del host: el servicio SIP necesita un rango grande de puertos UDP
+# para el audio (RTP) y Docker lo maneja mal con mapeo de puertos. Lo que no debe
+# verse desde Internet (LiveKit, Redis, dispatcher sin TLS) queda cerrado por el
+# firewall que configura scripts/bootstrap.sh.
+#
+# Los archivos de configuración de LiveKit los genera scripts/render-config.sh
+# a partir de .env en ./generated/ (no se versionan: llevan secretos).
+
+name: genix-voice
+
+services:
+  redis:
+    image: redis:7.4.10-alpine
+    network_mode: host
+    restart: unless-stopped
+    command: ["redis-server", "--bind", "127.0.0.1", "--port", "${REDIS_PORT:-6380}", "--requirepass", "${REDIS_PASSWORD}"]
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -p \"$$REDIS_PORT\" -a \"$$REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      REDIS_PORT: ${REDIS_PORT:-6380}
+
+  livekit:
+    image: livekit/livekit-server:v1.13.9
+    network_mode: host
+    restart: unless-stopped
+    command: ["--config", "/etc/livekit.yaml"]
+    volumes:
+      - ./generated/livekit.yaml:/etc/livekit.yaml:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  sip:
+    image: livekit/sip:v1.18.0
+    network_mode: host
+    restart: unless-stopped
+    volumes:
+      - ./generated/sip.yaml:/sip/config.yaml:ro
+    depends_on:
+      - livekit
+
+  agent:
+    build: ./app
+    image: genix-voice-app:local
+    network_mode: host
+    restart: unless-stopped
+    command: ["python", "-m", "voice_confirm.agent", "start"]
+    env_file: .env
+    environment:
+      LIVEKIT_URL: ws://127.0.0.1:7880
+      DATA_DIR: /data
+    volumes:
+      - ./data:/data
+    depends_on:
+      - livekit
+      - sip
+
+  dispatcher:
+    image: genix-voice-app:local
+    pull_policy: never  # la imagen la construye el servicio "agent"
+    network_mode: host
+    restart: unless-stopped
+    command:
+      - uvicorn
+      - voice_confirm.dispatcher:app
+      - --host
+      - ${DISPATCHER_HOST:-127.0.0.1}
+      - --port
+      - "${DISPATCHER_PORT:-8088}"
+      - --proxy-headers
+    env_file: .env
+    environment:
+      LIVEKIT_URL: ws://127.0.0.1:7880
+      DATA_DIR: /data
+    volumes:
+      - ./data:/data
+    depends_on:
+      - agent
+
+  # TLS opcional para que n8n llame al dispatcher por HTTPS.
+  # Se activa con: docker compose --profile tls up -d   (requiere DISPATCHER_DOMAIN en .env)
+  caddy:
+    image: caddy:2.11-alpine
+    profiles: ["tls"]
+    network_mode: host
+    restart: unless-stopped
+    volumes:
+      - ./generated/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - dispatcher
+
+volumes:
+  caddy_data:
+  caddy_config:

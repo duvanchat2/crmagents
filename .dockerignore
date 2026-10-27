@@ -15,3 +15,4 @@ docker-compose*.yml
 Caddyfile
 README.md
 INSTALL-IA.md
+voice-confirm

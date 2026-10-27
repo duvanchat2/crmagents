@@ -1,0 +1,26 @@
+# Generado por scripts/render-config.sh a partir de .env. No editar ./generated/livekit.yaml a mano.
+# El puerto 7880 (API y señalización) nunca se abre a Internet: el simulador del navegador
+# entra por Caddy (https://DISPATCHER_DOMAIN/rtc). El audio del simulador usa 7881/tcp y
+# 50000-50100/udp, que bootstrap.sh abre solo si hay DISPATCHER_DOMAIN.
+port: 7880
+# Solo localhost: el agente, el SIP y el proxy HTTPS (Caddy o nginx) entran por 127.0.0.1.
+bind_addresses:
+  - 127.0.0.1
+rtc:
+  tcp_port: 7881
+  port_range_start: 50000
+  port_range_end: 50100
+  # false: anuncia las IP de las interfaces del VPS (en la mayoría de VPS, la pública está ahí).
+  # true solo si el VPS está detrás de NAT (AWS, GCP, Oracle): la busca por STUN y, si no la
+  # encuentra, LiveKit no arranca. Se cambia con LIVEKIT_USE_EXTERNAL_IP en .env.
+  use_external_ip: ${LIVEKIT_USE_EXTERNAL_IP}
+redis:
+  address: 127.0.0.1:${REDIS_PORT}
+  password: ${REDIS_PASSWORD}
+keys:
+  ${LIVEKIT_API_KEY}: ${LIVEKIT_API_SECRET}
+room:
+  empty_timeout: 60
+  departure_timeout: 10
+logging:
+  level: info

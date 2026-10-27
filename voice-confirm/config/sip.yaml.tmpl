@@ -1,0 +1,14 @@
+# Generado por scripts/render-config.sh a partir de .env.
+# Puertos que deben estar abiertos hacia Internet (para Zadarma): 5060 UDP/TCP y 10000-20000 UDP.
+api_key: ${LIVEKIT_API_KEY}
+api_secret: ${LIVEKIT_API_SECRET}
+ws_url: ws://127.0.0.1:7880
+redis:
+  address: 127.0.0.1:${REDIS_PORT}
+  password: ${REDIS_PASSWORD}
+sip_port: 5060
+rtp_port: 10000-20000
+use_external_ip: true
+health_port: 8089
+logging:
+  level: info

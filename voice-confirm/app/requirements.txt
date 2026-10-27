@@ -1,0 +1,7 @@
+# Versiones fijas (todas con más de dos semanas de publicadas al crear este archivo).
+livekit-agents[openai,anthropic,assemblyai,elevenlabs,silero]==1.8.6
+livekit-plugins-fishaudio==1.8.6
+livekit-api==1.2.1
+fastapi==0.143.0
+uvicorn==0.53.0
+httpx==0.28.1
