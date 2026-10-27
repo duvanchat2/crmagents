@@ -190,7 +190,11 @@ docker compose "${profiles[@]}" up -d
 
 # ---------- 7. Verificación ----------
 say "Verificación"
-sleep 5
+# El agente tarda unos segundos en cargar los plugins y registrarse en LiveKit.
+for _ in $(seq 1 30); do
+  docker compose logs --since 5m agent 2>&1 | grep -qi 'registered worker' && break
+  sleep 2
+done
 check_status=0
 ./scripts/check.sh || check_status=$?
 
