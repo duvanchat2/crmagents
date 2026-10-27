@@ -181,7 +181,7 @@ if [ -n "${DISPATCHER_DOMAIN:-}" ]; then
   busy="$(ss -H -tlnp 2>/dev/null | awk '$4 ~ /:(80|443)$/' | grep -v '"caddy"' || true)"
   if [ -n "$busy" ]; then
     echo "  ATENCIÓN: 80/443 ya están ocupados por otro servicio; no levanto Caddy."
-    echo "  En ese proxy, apunte ${DISPATCHER_DOMAIN} a 127.0.0.1:${DISPATCHER_PORT:-8088} y la ruta /rtc a 127.0.0.1:7880 (WebSocket)."
+    echo "  En ese proxy, apunte ${DISPATCHER_DOMAIN} a ${DISPATCHER_HOST:-127.0.0.1}:${DISPATCHER_PORT:-8088} y la ruta /rtc a 127.0.0.1:7880 (WebSocket)."
   else
     profiles=(--profile tls)
   fi

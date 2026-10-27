@@ -40,10 +40,8 @@ services:
     image: livekit/sip:v1.18.0
     network_mode: host
     restart: unless-stopped
-    environment:
-      SIP_CONFIG_FILE: /etc/sip.yaml
     volumes:
-      - ./generated/sip.yaml:/etc/sip.yaml:ro
+      - ./generated/sip.yaml:/sip/config.yaml:ro
     depends_on:
       - livekit
 

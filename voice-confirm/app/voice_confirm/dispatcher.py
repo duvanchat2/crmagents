@@ -330,7 +330,8 @@ async def call_done(
     x_internal_token: Annotated[str | None, Header()] = None,
 ) -> dict[str, str]:
     client_host = request.client.host if request.client else ""
-    if client_host not in ("127.0.0.1", "::1"):
+    # El agente corre en este mismo VPS y llama a la IP donde escucha el dispatcher.
+    if client_host not in ("127.0.0.1", "::1", state.settings.dispatcher_host):
         raise HTTPException(status_code=403, detail="Solo desde el mismo servidor")
     if not x_internal_token or not hmac.compare_digest(x_internal_token, state.settings.internal_token):
         raise HTTPException(status_code=401, detail="Token interno inválido")

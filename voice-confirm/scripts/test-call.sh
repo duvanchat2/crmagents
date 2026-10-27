@@ -14,7 +14,7 @@ set +a
 phone="${1:?Uso: $0 <celular> <nombre> <cedula>}"
 name="${2:?Falta el nombre}"
 cedula="${3:?Falta la cédula}"
-base="http://127.0.0.1:${DISPATCHER_PORT:-8088}"
+base="http://${DISPATCHER_HOST:-127.0.0.1}:${DISPATCHER_PORT:-8088}"
 today_plus_10="$(date -d '+10 days' +%F 2>/dev/null || date -v+10d +%F)"
 
 body=$(cat <<JSON

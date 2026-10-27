@@ -30,9 +30,9 @@ echo "Servicios:"
 check "LiveKit responde (127.0.0.1:7880)" curl -fsS http://127.0.0.1:7880
 check "Servicio SIP sano (127.0.0.1:8089)" curl -fsS http://127.0.0.1:8089
 if [ "$with_zadarma" = 1 ]; then
-  check "Dispatcher + troncal SIP (/healthz)" sh -c "curl -fsS http://127.0.0.1:${DISPATCHER_PORT:-8088}/healthz | grep -q '\"troncal_sip\":true'"
+  check "Dispatcher + troncal SIP (/healthz)" sh -c "curl -fsS http://${DISPATCHER_HOST:-127.0.0.1}:${DISPATCHER_PORT:-8088}/healthz | grep -q '\"troncal_sip\":true'"
 else
-  check "Dispatcher + LiveKit (/healthz)" sh -c "curl -fsS http://127.0.0.1:${DISPATCHER_PORT:-8088}/healthz | grep -q '\"livekit\":true'"
+  check "Dispatcher + LiveKit (/healthz)" sh -c "curl -fsS http://${DISPATCHER_HOST:-127.0.0.1}:${DISPATCHER_PORT:-8088}/healthz | grep -q '\"livekit\":true'"
   printf '  \033[33mAVISO\033[0m Sin Zadarma: modo simulación (solo llamadas de prueba desde el navegador)\n'
 fi
 check "Agente registrado en LiveKit" sh -c "docker compose logs --since 30m agent 2>&1 | grep -qi 'registered worker'"

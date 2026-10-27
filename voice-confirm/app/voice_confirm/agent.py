@@ -428,7 +428,7 @@ async def finalize(
     try:
         async with httpx.AsyncClient(timeout=3.0) as client:
             await client.post(
-                f"http://127.0.0.1:{settings.dispatcher_port}/internal/calls/{call_id}/done",
+                f"http://{settings.dispatcher_host}:{settings.dispatcher_port}/internal/calls/{call_id}/done",
                 headers={"X-Internal-Token": settings.internal_token},
             )
     except Exception:

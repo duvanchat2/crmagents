@@ -49,6 +49,7 @@ class Settings:
     ringing_timeout_s: int
     max_call_duration_s: int
     dispatcher_port: int
+    dispatcher_host: str  # dónde escucha el dispatcher (127.0.0.1 o el puente de Docker)
     internal_token: str
     livekit_public_url: str  # para el simulador del navegador; vacío = wss://<dominio de la página>
 
@@ -70,6 +71,7 @@ class Settings:
             ringing_timeout_s=int(_opt("RINGING_TIMEOUT_S", "30")),
             max_call_duration_s=int(_opt("MAX_CALL_DURATION_S", "300")),
             dispatcher_port=int(_opt("DISPATCHER_PORT", "8088")),
+            dispatcher_host=_opt("DISPATCHER_HOST", "127.0.0.1"),
             internal_token=_req("INTERNAL_TOKEN"),
             livekit_public_url=_opt("LIVEKIT_PUBLIC_URL"),
         )
