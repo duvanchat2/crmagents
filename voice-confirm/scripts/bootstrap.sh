@@ -7,10 +7,12 @@
 # Qué hace:
 #   1. Instala Docker si falta.
 #   2. Genera las claves internas que sigan en REEMPLAZA_ dentro de .env.
-#   3. Verifica que estén las credenciales externas (Zadarma, AssemblyAI, LLM, voz, n8n).
+#   3. Verifica que estén las credenciales externas (AssemblyAI, LLM, voz; Zadarma y n8n opcionales).
+#      Sin Zadarma queda en "modo simulación": solo llamadas de prueba desde el navegador (/prueba).
 #   4. Genera la configuración de LiveKit y del servicio SIP.
-#   5. Abre en el firewall solo lo necesario (SSH, SIP 5060, audio 10000-20000/udp).
-#   6. Construye la imagen, levanta LiveKit, crea la troncal de Zadarma y levanta el agente.
+#   5. Abre en el firewall solo lo necesario (SSH, SIP 5060, audio 10000-20000/udp y, con dominio,
+#      80/443 y el audio del simulador 7881/tcp y 50000-50100/udp).
+#   6. Construye la imagen, levanta LiveKit, crea la troncal de Zadarma (si hay) y levanta el agente.
 #   7. Corre scripts/check.sh.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -61,7 +63,16 @@ set +a
 
 # ---------- 3. Credenciales externas ----------
 say "Credenciales externas"
-required=(ZADARMA_SIP_USER ZADARMA_SIP_PASSWORD ZADARMA_CALLER_NUMBER ASSEMBLYAI_API_KEY N8N_RESULT_WEBHOOK_URL)
+is_set() { local v="${!1:-}"; [ -n "$v" ] && [[ "$v" != REEMPLAZA_* ]]; }
+
+required=(ASSEMBLYAI_API_KEY)
+zadarma_vars=(ZADARMA_SIP_USER ZADARMA_SIP_PASSWORD ZADARMA_CALLER_NUMBER)
+zadarma_count=0
+for key in "${zadarma_vars[@]}"; do is_set "$key" && zadarma_count=$((zadarma_count + 1)); done
+# Los tres o ninguno: ninguno = modo simulación; a medias es un error de configuración.
+if [ "$zadarma_count" -gt 0 ]; then
+  required+=("${zadarma_vars[@]}")
+fi
 case "${LLM_PROVIDER:-openrouter}" in
   anthropic) required+=(ANTHROPIC_API_KEY) ;;
   *) required+=(OPENROUTER_API_KEY) ;;
@@ -72,18 +83,25 @@ case "${TTS_PROVIDER:-fishaudio}" in
 esac
 missing=()
 for key in "${required[@]}"; do
-  value="${!key:-}"
-  if [ -z "$value" ] || [[ "$value" == REEMPLAZA_* ]]; then
-    missing+=("$key")
-  fi
+  is_set "$key" || missing+=("$key")
 done
 if [ "${#missing[@]}" -gt 0 ]; then
   echo "Faltan estas variables en $(pwd)/.env (vea la guía en cada línea):"
   printf '  - %s\n' "${missing[@]}"
   exit 2
 fi
-[[ "$ZADARMA_CALLER_NUMBER" == +57* ]] || fail "ZADARMA_CALLER_NUMBER debe ir en formato +57..."
 echo "  completas"
+if [ "$zadarma_count" -gt 0 ]; then
+  [[ "$ZADARMA_CALLER_NUMBER" == +57* ]] || fail "ZADARMA_CALLER_NUMBER debe ir en formato +57..."
+  with_zadarma=1
+else
+  with_zadarma=0
+  echo "  Sin Zadarma: MODO SIMULACIÓN. Solo funcionan las llamadas de prueba desde el navegador (/prueba)."
+  echo "  Cuando tenga la extensión y el 601, complete ZADARMA_* y vuelva a correr este script."
+fi
+if ! is_set N8N_RESULT_WEBHOOK_URL; then
+  echo "  Sin N8N_RESULT_WEBHOOK_URL: los resultados quedan solo en el VPS (data/calls/)."
+fi
 
 # ---------- 4. Configuración ----------
 say "Configuración de LiveKit y SIP"
@@ -106,6 +124,9 @@ if command -v ufw >/dev/null 2>&1; then
   if [ -n "${DISPATCHER_DOMAIN:-}" ]; then
     ufw allow 80/tcp >/dev/null
     ufw allow 443/tcp >/dev/null
+    # Audio del simulador del navegador (WebRTC). La API de LiveKit (7880) sigue cerrada.
+    ufw allow 7881/tcp >/dev/null
+    ufw allow 50000:50100/udp >/dev/null
   fi
   if [ -n "${N8N_ALLOWED_IP:-}" ] && [ "${DISPATCHER_HOST:-127.0.0.1}" != "127.0.0.1" ]; then
     ufw allow from "$N8N_ALLOWED_IP" to any port "${DISPATCHER_PORT:-8088}" proto tcp >/dev/null
@@ -128,11 +149,12 @@ if command -v ufw >/dev/null 2>&1; then
       echo "  vuelva a correr con FORCE_UFW=1, o active ufw a mano."
     else
       ufw --force enable >/dev/null
-      echo "  ufw activado (SSH ${ssh_port}, SIP 5060, audio 10000-20000/udp)."
+      echo "  ufw activado (SSH ${ssh_port}, SIP 5060, audio 10000-20000/udp${DISPATCHER_DOMAIN:+, 80/443, simulador 7881/tcp y 50000-50100/udp})."
     fi
   fi
 else
-  echo "  ufw no está instalado: abra a mano SSH, 5060 UDP/TCP y 10000-20000 UDP, y mantenga cerrados 6379, 7880, 7881, 8088 y 50000-50100."
+  echo "  ufw no está instalado: abra a mano SSH, 5060 UDP/TCP y 10000-20000 UDP"
+  echo "  (con dominio, también 80/443, 7881/tcp y 50000-50100/udp) y mantenga cerrados el puerto de Redis, 7880 y 8088."
 fi
 echo "  Si su proveedor tiene firewall en el panel (Hetzner, AWS, DigitalOcean...), abra ahí los mismos puertos."
 
@@ -147,13 +169,45 @@ done
 curl -fsS http://127.0.0.1:7880 >/dev/null 2>&1 || fail "LiveKit no respondió en 127.0.0.1:7880 (docker compose logs livekit)."
 
 say "Troncal SIP de Zadarma en LiveKit"
-docker compose run --rm --no-deps dispatcher python -m voice_confirm.trunk
+if [ "$with_zadarma" = 1 ]; then
+  docker compose run --rm --no-deps dispatcher python -m voice_confirm.trunk
+else
+  echo "  Omitida (modo simulación)."
+fi
 
 profiles=()
-[ -n "${DISPATCHER_DOMAIN:-}" ] && profiles=(--profile tls)
+if [ -n "${DISPATCHER_DOMAIN:-}" ]; then
+  # Si otro proxy (Nginx, Traefik, Coolify...) ya ocupa 80/443, Caddy no podría arrancar.
+  busy="$(ss -H -tlnp 2>/dev/null | awk '$4 ~ /:(80|443)$/' | grep -v '"caddy"' || true)"
+  if [ -n "$busy" ]; then
+    echo "  ATENCIÓN: 80/443 ya están ocupados por otro servicio; no levanto Caddy."
+    echo "  En ese proxy, apunte ${DISPATCHER_DOMAIN} a 127.0.0.1:${DISPATCHER_PORT:-8088} y la ruta /rtc a 127.0.0.1:7880 (WebSocket)."
+  else
+    profiles=(--profile tls)
+  fi
+fi
 docker compose "${profiles[@]}" up -d
 
 # ---------- 7. Verificación ----------
 say "Verificación"
 sleep 5
-./scripts/check.sh
+check_status=0
+./scripts/check.sh || check_status=$?
+
+echo
+ip="$(curl -fsS https://api.ipify.org 2>/dev/null || true)"
+if [ -n "${DISPATCHER_DOMAIN:-}" ]; then
+  echo "Simulador (habla con el agente desde el navegador): https://${DISPATCHER_DOMAIN}/prueba"
+  echo "Pide el DISPATCHER_TOKEN del .env. Para un enlace que ya lo lleve: ./scripts/sim-link.sh"
+  if [ -n "$ip" ] && [ "${LIVEKIT_USE_EXTERNAL_IP:-false}" != "true" ] && ! hostname -I 2>/dev/null | tr ' ' '\n' | grep -qx "$ip"; then
+    echo "AVISO: la IP pública ${ip} no está en las interfaces del VPS (está detrás de NAT)."
+    echo "  Si el simulador conecta pero no se oye, ponga LIVEKIT_USE_EXTERNAL_IP=true y vuelva a correr este script."
+  fi
+else
+  echo "Para el simulador del navegador hace falta HTTPS: ponga un dominio en DISPATCHER_DOMAIN."
+  if [ -n "$ip" ]; then
+    echo "Sin DNS propio sirve uno gratuito que ya apunta a este VPS: DISPATCHER_DOMAIN=${ip//./-}.sslip.io"
+  fi
+  echo "Luego vuelva a correr: sudo ./scripts/bootstrap.sh"
+fi
+exit "$check_status"

@@ -1,7 +1,10 @@
 """API HTTP que usa n8n para pedir llamadas, y entrega de resultados a n8n.
 
   POST /v1/calls             n8n pide una llamada (Bearer DISPATCHER_TOKEN)
-  GET  /v1/calls/{call_id}   estado de una llamada (Bearer DISPATCHER_TOKEN)
+  GET  /v1/calls/{call_id}   estado y resultado de una llamada (Bearer DISPATCHER_TOKEN)
+  GET  /v1/calls/{call_id}/audio   la grabación (Bearer DISPATCHER_TOKEN)
+  POST /v1/simulaciones      llamada simulada: el "cliente" habla desde el navegador, sin Zadarma
+  GET  /prueba               página del simulador (pide el DISPATCHER_TOKEN)
   GET  /healthz              salud: LiveKit responde y la troncal existe
   POST /internal/calls/{id}/done   el agente avisa que colgó (solo localhost, X-Internal-Token)
 
@@ -18,15 +21,18 @@ import secrets
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from typing import Annotated, Any
 
 import httpx
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request
+from fastapi.responses import FileResponse, HTMLResponse
 from livekit import api
 from pydantic import BaseModel, Field, field_validator
 
-from .config import DeliverySettings, Settings, dispatcher_token
+from .config import DeliverySettings, Settings, dispatcher_token, zadarma_configured
 from .domain import (
+    CLIENT_IDENTITY,
     InvalidPhone,
     Sale,
     digits_only,
@@ -50,6 +56,8 @@ from .outbox import (
 
 logger = logging.getLogger("genix.dispatcher")
 SWEEP_EVERY_S = 60
+SIMULATOR_PAGE = Path(__file__).parent / "static" / "prueba.html"
+SIMULATOR_TOKEN_TTL = timedelta(minutes=15)
 
 
 class SaleIn(BaseModel):
@@ -84,6 +92,12 @@ class SaleIn(BaseModel):
 
     def to_sale(self) -> Sale:
         return Sale.from_dict(self.model_dump(mode="json"))
+
+
+class SimulacionIn(SaleIn):
+    """Igual que una venta, pero sin teléfono: el "cliente" contesta desde el navegador."""
+
+    telefono: str = "+573000000000"
 
 
 class State:
@@ -171,8 +185,45 @@ def active_call_for(venta_id: str, now: datetime) -> str | None:
     return None
 
 
+async def start_call(sale: Sale, now: datetime, *, simulacion: bool) -> str:
+    """Crea la carpeta de la llamada y despacha el agente a una sala nueva. Devuelve el call_id."""
+    if existing := active_call_for(sale.venta_id, now):
+        raise HTTPException(status_code=409, detail={"error": "llamada_en_curso", "call_id": existing})
+
+    prefix = "sim" if simulacion else "venta"
+    call_id = f"{prefix}-{safe_room_fragment(sale.venta_id)}-{secrets.token_hex(3)}"
+    directory = call_dir(state.settings.data_dir, call_id)
+    request: dict[str, Any] = {"created_at": now.isoformat(), "sale": sale.to_dict()}
+    metadata: dict[str, Any] = {"sale": sale.to_dict()}
+    if simulacion:
+        request["simulacion"] = metadata["simulacion"] = True
+    write_json_atomic(directory / "request.json", request)
+    try:
+        await state.lkapi.agent_dispatch.create_dispatch(
+            api.CreateAgentDispatchRequest(
+                agent_name=state.settings.agent_name,
+                room=call_id,
+                metadata=json.dumps(metadata),
+            )
+        )
+    except Exception as exc:
+        logger.exception("LiveKit no aceptó el despacho", extra={"call_id": call_id})
+        (directory / "request.json").unlink(missing_ok=True)
+        directory.rmdir()
+        raise HTTPException(status_code=502, detail={"error": "livekit_no_disponible"}) from exc
+    return call_id
+
+
 @app.post("/v1/calls", status_code=202, dependencies=[Depends(require_token)])
 async def create_call(body: SaleIn) -> dict[str, Any]:
+    if not zadarma_configured():
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "sin_zadarma",
+                "mensaje": "Faltan los datos de Zadarma en .env: por ahora solo funcionan las llamadas simuladas (/prueba).",
+            },
+        )
     now = utcnow()
     if not state.settings.allow_outside_hours and not is_contact_allowed(now, state.settings.holidays):
         raise HTTPException(
@@ -182,31 +233,42 @@ async def create_call(body: SaleIn) -> dict[str, Any]:
                 "mensaje": "Ley 2300: L-V 7:00-19:00, sábado 8:00-15:00, sin domingos ni festivos (hora de Bogotá).",
             },
         )
-    sale = body.to_sale()
-    if existing := active_call_for(sale.venta_id, now):
-        raise HTTPException(status_code=409, detail={"error": "llamada_en_curso", "call_id": existing})
-
-    call_id = f"venta-{safe_room_fragment(sale.venta_id)}-{secrets.token_hex(3)}"
-    directory = call_dir(state.settings.data_dir, call_id)
-    write_json_atomic(directory / "request.json", {"created_at": now.isoformat(), "sale": sale.to_dict()})
-    try:
-        await state.lkapi.agent_dispatch.create_dispatch(
-            api.CreateAgentDispatchRequest(
-                agent_name=state.settings.agent_name,
-                room=call_id,
-                metadata=json.dumps({"sale": sale.to_dict()}),
-            )
-        )
-    except Exception as exc:
-        logger.exception("LiveKit no aceptó el despacho", extra={"call_id": call_id})
-        (directory / "request.json").unlink(missing_ok=True)
-        directory.rmdir()
-        raise HTTPException(status_code=502, detail={"error": "livekit_no_disponible"}) from exc
+    call_id = await start_call(body.to_sale(), now, simulacion=False)
     return {"call_id": call_id, "estado": "marcando"}
 
 
-@app.get("/v1/calls/{call_id}", dependencies=[Depends(require_token)])
-async def get_call(call_id: str) -> dict[str, Any]:
+@app.post("/v1/simulaciones", status_code=202, dependencies=[Depends(require_token)])
+async def create_simulation(body: SimulacionIn) -> dict[str, Any]:
+    """Llamada simulada: mismo agente, guion, grabación y resultado, pero el cliente entra por el
+    navegador en vez de por Zadarma. No llama a nadie, así que no aplica el horario de la Ley 2300."""
+    sale = body.to_sale()
+    call_id = await start_call(sale, utcnow(), simulacion=True)
+    token = (
+        api.AccessToken(state.settings.livekit_api_key, state.settings.livekit_api_secret)
+        .with_identity(CLIENT_IDENTITY)
+        .with_name(sale.nombre)
+        .with_ttl(SIMULATOR_TOKEN_TTL)
+        .with_grants(
+            api.VideoGrants(
+                room_join=True,
+                room=call_id,
+                can_publish=True,
+                can_subscribe=True,
+                can_publish_data=False,
+                can_publish_sources=["microphone"],
+            )
+        )
+        .to_jwt()
+    )
+    return {
+        "call_id": call_id,
+        "estado": "esperando",
+        "livekit_url": state.settings.livekit_public_url or None,
+        "token": token,
+    }
+
+
+def existing_call_dir(call_id: str) -> tuple[Path, dict[str, Any]]:
     try:
         directory = call_dir(state.settings.data_dir, call_id)
     except ValueError as exc:
@@ -214,13 +276,38 @@ async def get_call(call_id: str) -> dict[str, Any]:
     request = read_json(directory / "request.json")
     if request is None:
         raise HTTPException(status_code=404, detail="No existe esa llamada")
+    return directory, request
+
+
+@app.get("/v1/calls/{call_id}", dependencies=[Depends(require_token)])
+async def get_call(call_id: str) -> dict[str, Any]:
+    directory, request = existing_call_dir(call_id)
     result = read_json(directory / "result.json")
+    audio = directory / "audio.ogg"
     return {
         "call_id": call_id,
         "venta_id": request["sale"]["venta_id"],
+        "simulacion": bool(request.get("simulacion", False)),
         "estado": result["estado"] if result else "en_curso",
         "entregado_a_n8n": (directory / "delivered.json").exists(),
+        "grabacion": audio.exists() and audio.stat().st_size > 0,
+        "resultado": result,
     }
+
+
+@app.get("/v1/calls/{call_id}/audio", dependencies=[Depends(require_token)])
+async def get_call_audio(call_id: str) -> FileResponse:
+    directory, _ = existing_call_dir(call_id)
+    audio = directory / "audio.ogg"
+    if not audio.exists():
+        raise HTTPException(status_code=404, detail="Esa llamada no tiene grabación")
+    return FileResponse(audio, media_type="audio/ogg", filename=f"{call_id}.ogg")
+
+
+@app.get("/prueba", response_class=HTMLResponse, include_in_schema=False)
+async def simulator_page() -> HTMLResponse:
+    # La página no lleva secretos: pide el DISPATCHER_TOKEN y lo guarda solo en esa pestaña.
+    return HTMLResponse(SIMULATOR_PAGE.read_text(encoding="utf-8"), headers={"Cache-Control": "no-store"})
 
 
 @app.get("/healthz")
@@ -230,7 +317,9 @@ async def healthz() -> dict[str, Any]:
     except Exception as exc:
         raise HTTPException(status_code=503, detail={"ok": False, "livekit": False}) from exc
     has_trunk = any(t.name == state.settings.trunk_name for t in trunks.items)
-    return {"ok": has_trunk, "livekit": True, "troncal_sip": has_trunk}
+    zadarma = zadarma_configured()
+    # Sin Zadarma el servicio está sano para simular; con Zadarma, debe existir la troncal.
+    return {"ok": has_trunk or not zadarma, "livekit": True, "troncal_sip": has_trunk, "zadarma": zadarma}
 
 
 @app.post("/internal/calls/{call_id}/done", status_code=202)

@@ -1,0 +1,411 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Simulador de llamada</title>
+<style>
+  :root {
+    --bg: #0b1410;
+    --panel: #12201a;
+    --line: #223a2f;
+    --text: #e8f1ec;
+    --muted: #94a89d;
+    --accent: #25d366;
+    --accent-ink: #052e16;
+    --danger: #f87171;
+    --warn: #fbbf24;
+    --radius: 14px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 560px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 1.4rem; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 20px; }
+  section {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 16px;
+    margin-bottom: 16px;
+  }
+  h2 { font-size: 1rem; margin: 0 0 12px; }
+  label { display: block; font-size: .85rem; color: var(--muted); margin: 10px 0 4px; }
+  input {
+    width: 100%;
+    padding: 10px 12px;
+    border-radius: 10px;
+    border: 1px solid var(--line);
+    background: var(--bg);
+    color: var(--text);
+    font: inherit;
+  }
+  input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }
+  details summary { cursor: pointer; color: var(--muted); font-size: .9rem; }
+  button {
+    width: 100%;
+    padding: 14px;
+    border: 0;
+    border-radius: 999px;
+    font: 600 1rem/1 inherit;
+    cursor: pointer;
+    margin-top: 16px;
+  }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  .call { background: var(--accent); color: var(--accent-ink); }
+  .hang { background: var(--danger); color: #3b0a0a; }
+  .ghost { background: transparent; color: var(--text); border: 1px solid var(--line); }
+  #status { font-weight: 600; }
+  #timer { color: var(--muted); font-variant-numeric: tabular-nums; margin-left: 6px; }
+  #speaking { color: var(--muted); min-height: 1.5em; margin: 4px 0 0; }
+  .error { color: var(--danger); }
+  .badge {
+    display: inline-block;
+    padding: 4px 12px;
+    border-radius: 999px;
+    font-weight: 700;
+    background: var(--line);
+  }
+  .badge.ok { background: var(--accent); color: var(--accent-ink); }
+  .badge.warn { background: var(--warn); color: #3a2a00; }
+  .badge.bad { background: var(--danger); color: #3b0a0a; }
+  dl { display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; margin: 14px 0; }
+  dt { color: var(--muted); }
+  dd { margin: 0; }
+  ol { padding-left: 0; list-style: none; margin: 0; }
+  ol li { padding: 8px 10px; border-radius: 10px; margin-bottom: 6px; background: var(--bg); }
+  ol li b { display: block; font-size: .75rem; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  audio { width: 100%; margin-top: 8px; }
+  a { color: var(--accent); }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Simulador de llamada</h1>
+  <p class="sub">Usted hace de cliente: el agente le habla por este navegador igual que por teléfono. No se llama a nadie y no usa Zadarma.</p>
+
+  <section id="setup">
+    <h2>1. Acceso</h2>
+    <label for="token">DISPATCHER_TOKEN (está en el .env del VPS)</label>
+    <input id="token" type="password" autocomplete="off" spellcheck="false">
+
+    <h2 style="margin-top:20px">2. Venta de prueba</h2>
+    <label for="nombre">Nombre del cliente</label>
+    <input id="nombre" value="Carlos Pérez">
+    <label for="cedula">Cédula registrada (dígala en la llamada)</label>
+    <input id="cedula" inputmode="numeric" value="1234567890">
+    <label for="programa">Programa</label>
+    <input id="programa" value="Inteligencia Artificial para Empresas">
+    <div class="row">
+      <div>
+        <label for="valor_total">Valor total</label>
+        <input id="valor_total" inputmode="numeric" value="480000">
+      </div>
+      <div>
+        <label for="numero_cuotas">Cuotas</label>
+        <input id="numero_cuotas" inputmode="numeric" value="6">
+      </div>
+      <div>
+        <label for="valor_cuota">Valor de la cuota</label>
+        <input id="valor_cuota" inputmode="numeric" value="80000">
+      </div>
+      <div>
+        <label for="fecha_primera_cuota">Primera cuota</label>
+        <input id="fecha_primera_cuota" type="date">
+      </div>
+    </div>
+    <details>
+      <summary>Más datos</summary>
+      <label for="contenido">Contenido</label>
+      <input id="contenido" value="cuarenta horas de clases y certificado">
+      <label for="periodicidad">Periodicidad</label>
+      <input id="periodicidad" value="mensuales">
+      <label for="asesor">Asesor</label>
+      <input id="asesor" value="Prueba">
+    </details>
+    <button id="start" class="call">Recibir la llamada</button>
+    <p id="setupError" class="error"></p>
+  </section>
+
+  <section id="live" class="hidden">
+    <h2>Llamada</h2>
+    <p><span id="status">Conectando…</span><span id="timer"></span></p>
+    <p id="speaking"></p>
+    <button id="unmute" class="ghost hidden">Activar el sonido</button>
+    <button id="hangup" class="hang">Colgar</button>
+    <p id="liveError" class="error"></p>
+    <div id="audioSink" class="hidden"></div>
+  </section>
+
+  <section id="result" class="hidden">
+    <h2>Resultado</h2>
+    <p id="resultStatus">Esperando el resultado del agente…</p>
+    <div id="resultBody" class="hidden">
+      <span id="estado" class="badge"></span>
+      <dl id="facts"></dl>
+      <div id="recording" class="hidden">
+        <h2>Grabación</h2>
+        <audio id="player" controls></audio>
+        <p><a id="download" download>Descargar la grabación (.ogg)</a></p>
+      </div>
+      <h2>Transcripción</h2>
+      <ol id="transcript"></ol>
+    </div>
+    <button id="again" class="ghost hidden">Hacer otra prueba</button>
+  </section>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/livekit-client@2.22.3/dist/livekit-client.umd.js"
+        integrity="sha384-G/xxtkVytOx/ia9Q8MXxM+V0ohsaY1fZAgVP3iSGTPz4wJ0s3+ulJNKXh/gnzEDZ"
+        crossorigin="anonymous"></script>
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const TOKEN_KEY = "genix-dispatcher-token";
+  const ESTADOS = {
+    confirmada: ["Confirmada", "ok"],
+    revision: ["Revisión", "warn"],
+    incompleta: ["Incompleta", "warn"],
+    no_contesta: ["No contestó", "bad"],
+    ocupado: ["Ocupado", "bad"],
+    buzon: ["Buzón", "bad"],
+    fallida: ["Fallida", "bad"],
+  };
+  let room = null;
+  let callId = null;
+  let timerHandle = null;
+
+  // El token puede venir en el enlace (#t=...): el fragmento no llega al servidor ni a los logs.
+  const fromHash = new URLSearchParams(location.hash.slice(1)).get("t");
+  if (fromHash) {
+    try { sessionStorage.setItem(TOKEN_KEY, fromHash); } catch (_) {}
+    history.replaceState(null, "", location.pathname);
+  }
+  try { $("token").value = fromHash || sessionStorage.getItem(TOKEN_KEY) || ""; } catch (_) {}
+
+  const due = new Date(Date.now() + 10 * 864e5);
+  $("fecha_primera_cuota").value = due.toISOString().slice(0, 10);
+
+  function show(id, visible) { $(id).classList.toggle("hidden", !visible); }
+  function digits(id) { return parseInt($(id).value.replace(/\D/g, ""), 10) || 0; }
+
+  async function api(path, options = {}) {
+    const resp = await fetch(path, {
+      ...options,
+      headers: { Authorization: "Bearer " + $("token").value.trim(), ...(options.headers || {}) },
+    });
+    if (resp.status === 401) throw new Error("El token no es válido. Cópielo de DISPATCHER_TOKEN en el .env del VPS.");
+    return resp;
+  }
+
+  function describeError(detail) {
+    if (!detail) return "Error inesperado.";
+    if (typeof detail === "string") return detail;
+    if (Array.isArray(detail)) return "Datos inválidos: " + detail.map((d) => d.loc.slice(-1)[0] + " (" + d.msg + ")").join(", ");
+    if (detail.error === "llamada_en_curso") return "Ya hay una simulación en curso para esa venta. Espere un minuto.";
+    if (detail.error === "livekit_no_disponible") return "LiveKit no respondió en el VPS (docker compose logs livekit).";
+    return detail.mensaje || detail.error || JSON.stringify(detail);
+  }
+
+  function startTimer() {
+    const t0 = Date.now();
+    timerHandle = setInterval(() => {
+      const s = Math.floor((Date.now() - t0) / 1000);
+      $("timer").textContent = String(Math.floor(s / 60)).padStart(2, "0") + ":" + String(s % 60).padStart(2, "0");
+    }, 500);
+  }
+
+  async function start() {
+    $("setupError").textContent = "";
+    if (!window.LivekitClient) {
+      $("setupError").textContent = "No cargó la librería de LiveKit (cdn.jsdelivr.net). Revise la conexión a Internet.";
+      return;
+    }
+    if (!$("token").value.trim()) {
+      $("setupError").textContent = "Falta el DISPATCHER_TOKEN.";
+      return;
+    }
+    try { sessionStorage.setItem(TOKEN_KEY, $("token").value.trim()); } catch (_) {}
+    $("start").disabled = true;
+
+    try {
+      // Pedir el micrófono antes de crear la llamada: si lo niega, no queda una sala esperando.
+      const probe = await navigator.mediaDevices.getUserMedia({ audio: true });
+      probe.getTracks().forEach((t) => t.stop());
+    } catch (err) {
+      $("setupError").textContent = "Sin permiso para el micrófono. Permítalo en el navegador y vuelva a intentar.";
+      $("start").disabled = false;
+      return;
+    }
+
+    let created;
+    try {
+      const resp = await api("/v1/simulaciones", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          venta_id: "PRUEBA-" + Date.now(),
+          nombre: $("nombre").value.trim(),
+          cedula: $("cedula").value.trim(),
+          programa: $("programa").value.trim(),
+          contenido: $("contenido").value.trim(),
+          valor_total: digits("valor_total"),
+          numero_cuotas: digits("numero_cuotas"),
+          valor_cuota: digits("valor_cuota"),
+          fecha_primera_cuota: $("fecha_primera_cuota").value,
+          periodicidad: $("periodicidad").value.trim() || "mensuales",
+          asesor: $("asesor").value.trim(),
+        }),
+      });
+      created = await resp.json();
+      if (!resp.ok) throw new Error(describeError(created.detail));
+    } catch (err) {
+      $("setupError").textContent = err.message;
+      $("start").disabled = false;
+      return;
+    }
+
+    callId = created.call_id;
+    show("setup", false);
+    show("live", true);
+    $("status").textContent = "Conectando…";
+    await join(created.livekit_url || (location.protocol === "https:" ? "wss://" : "ws://") + location.host, created.token);
+  }
+
+  async function join(url, token) {
+    const { Room, RoomEvent, Track } = LivekitClient;
+    room = new Room({
+      audioCaptureDefaults: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+    });
+    room.on(RoomEvent.TrackSubscribed, (track) => {
+      if (track.kind === Track.Kind.Audio) $("audioSink").appendChild(track.attach());
+    });
+    room.on(RoomEvent.TrackUnsubscribed, (track) => track.detach().forEach((el) => el.remove()));
+    room.on(RoomEvent.ParticipantConnected, () => {
+      $("status").textContent = "En llamada";
+      if (!timerHandle) startTimer();
+    });
+    room.on(RoomEvent.ActiveSpeakersChanged, (speakers) => {
+      const agent = speakers.some((p) => p.identity !== room.localParticipant.identity);
+      const me = speakers.some((p) => p.identity === room.localParticipant.identity);
+      $("speaking").textContent = agent ? "Habla el agente…" : me ? "Habla usted…" : "";
+    });
+    room.on(RoomEvent.AudioPlaybackStatusChanged, () => show("unmute", !room.canPlaybackAudio));
+    room.on(RoomEvent.Disconnected, () => ended());
+
+    try {
+      await room.connect(url, token);
+      await room.localParticipant.setMicrophoneEnabled(true);
+      if (room.remoteParticipants.size > 0) {
+        $("status").textContent = "En llamada";
+        if (!timerHandle) startTimer();
+      } else {
+        $("status").textContent = "Esperando al agente…";
+      }
+      show("unmute", !room.canPlaybackAudio);
+    } catch (err) {
+      $("liveError").textContent =
+        "No se pudo conectar con LiveKit. Revise que el VPS tenga abiertos 7881/tcp y 50000-50100/udp " +
+        "(también en el firewall del proveedor). Detalle: " + (err && err.message ? err.message : err);
+      ended();
+    }
+  }
+
+  let finished = false;
+  async function ended() {
+    if (finished) return;
+    finished = true;
+    clearInterval(timerHandle);
+    $("status").textContent = "Llamada terminada";
+    $("speaking").textContent = "";
+    show("hangup", false);
+    show("unmute", false);
+    if (room) room.disconnect();
+    show("result", true);
+    await pollResult();
+  }
+
+  async function pollResult() {
+    for (let i = 0; i < 45; i++) {
+      try {
+        const resp = await api("/v1/calls/" + encodeURIComponent(callId));
+        const data = await resp.json();
+        if (resp.ok && data.estado !== "en_curso") {
+          await renderResult(data);
+          show("again", true);
+          return;
+        }
+      } catch (err) {
+        $("resultStatus").textContent = err.message;
+      }
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+    $("resultStatus").textContent = "El agente no entregó resultado a tiempo. Revise: docker compose logs --since 10m agent";
+    show("again", true);
+  }
+
+  function fact(label, value) {
+    const dt = document.createElement("dt");
+    dt.textContent = label;
+    const dd = document.createElement("dd");
+    dd.textContent = value;
+    $("facts").append(dt, dd);
+  }
+  const yesNo = (v) => (v === true ? "Sí" : v === false ? "No" : "—");
+
+  async function renderResult(data) {
+    const r = data.resultado || {};
+    const [label, tone] = ESTADOS[data.estado] || [data.estado, ""];
+    $("resultStatus").textContent = "";
+    $("estado").textContent = label;
+    $("estado").className = "badge " + tone;
+    $("facts").replaceChildren();
+    fact("Cédula que dijo", r.cedula_dicha || "—");
+    fact("Cédula coincide", yesNo(r.cedula_coincide));
+    fact("Confirmó condiciones", yesNo(r.confirma_condiciones));
+    fact("Dijo «acepto»", yesNo(r.dijo_acepto));
+    if (r.frase_aceptacion) fact("Frase", r.frase_aceptacion);
+    fact("Motivo de fin", r.motivo_fin || "—");
+    fact("Enviado a n8n", data.entregado_a_n8n ? "Sí (marcado como simulación)" : "No");
+
+    $("transcript").replaceChildren(
+      ...(r.transcripcion || []).map((line) => {
+        const li = document.createElement("li");
+        const who = document.createElement("b");
+        who.textContent = line.rol === "agente" ? "Agente" : "Cliente";
+        li.append(who, document.createTextNode(line.texto));
+        return li;
+      })
+    );
+    show("resultBody", true);
+
+    if (data.grabacion) {
+      try {
+        const resp = await api("/v1/calls/" + encodeURIComponent(callId) + "/audio");
+        if (resp.ok) {
+          const url = URL.createObjectURL(await resp.blob());
+          $("player").src = url;
+          $("download").href = url;
+          $("download").download = callId + ".ogg";
+          show("recording", true);
+        }
+      } catch (_) {}
+    }
+  }
+
+  $("start").addEventListener("click", start);
+  $("hangup").addEventListener("click", () => (room ? room.disconnect() : ended()));
+  $("unmute").addEventListener("click", () => room && room.startAudio());
+  $("again").addEventListener("click", () => location.reload());
+})();
+</script>
+</body>
+</html>

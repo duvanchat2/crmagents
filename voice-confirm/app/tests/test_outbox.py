@@ -76,6 +76,7 @@ def test_build_payload_fields() -> None:
         None,
     )
     assert payload["evento"] == "confirmacion_llamada"
+    assert payload["simulacion"] is False
     assert payload["venta_id"] == "GX-1"
     assert payload["estado"] == "revision"
     assert payload["dijo_acepto"] is False
@@ -103,6 +104,34 @@ async def test_deliver_without_bunny_posts_signed_payload(tmp_path: Path) -> Non
     assert body["estado"] == "confirmada"
     assert body["grabacion"]["almacen"] == "vps"
     assert (directory / "delivered.json").exists()
+
+
+async def test_deliver_marks_simulation(tmp_path: Path) -> None:
+    directory = make_call(tmp_path)
+    request = read_json(directory / "request.json")
+    write_json_atomic(directory / "request.json", {**request, "simulacion": True})
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        assert await deliver(directory, settings(), client) is True
+    assert json.loads(seen[0].content)["simulacion"] is True
+
+
+async def test_deliver_without_webhook_keeps_result_local(tmp_path: Path) -> None:
+    directory = make_call(tmp_path)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("no debe llamar a nadie")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        assert await deliver(directory, settings(n8n_webhook_url=""), client) is True
+    assert read_json(directory / "delivered.json")["n8n"] is False
+    assert read_json(directory / "recording.json")["almacen"] == "vps"
+    assert pending_dirs(tmp_path) == []
 
 
 async def test_deliver_uploads_to_bunny_once(tmp_path: Path) -> None:

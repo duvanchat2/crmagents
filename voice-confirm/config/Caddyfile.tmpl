@@ -1,7 +1,15 @@
 # Generado por scripts/render-config.sh. Solo se usa con el perfil "tls".
 ${DISPATCHER_DOMAIN} {
-	@internal path /internal/*
-	respond @internal 404
+	handle /internal/* {
+		respond 404
+	}
 
-	reverse_proxy 127.0.0.1:${DISPATCHER_PORT}
+	# Señalización de LiveKit para el simulador del navegador (/prueba).
+	handle /rtc* {
+		reverse_proxy 127.0.0.1:7880
+	}
+
+	handle {
+		reverse_proxy 127.0.0.1:${DISPATCHER_PORT}
+	}
 }

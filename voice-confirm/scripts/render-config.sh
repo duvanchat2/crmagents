@@ -8,6 +8,8 @@ set -a
 # shellcheck disable=SC1091
 . ./.env
 set +a
+export LIVEKIT_USE_EXTERNAL_IP="${LIVEKIT_USE_EXTERNAL_IP:-false}"
+export REDIS_PORT="${REDIS_PORT:-6380}"
 
 mkdir -p generated
 chmod 700 generated

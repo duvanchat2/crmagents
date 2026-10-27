@@ -10,6 +10,9 @@ from zoneinfo import ZoneInfo
 
 BOGOTA = ZoneInfo("America/Bogota")
 
+# Identidad del cliente en la sala de LiveKit: el celular (SIP) o el navegador en una simulación.
+CLIENT_IDENTITY = "cliente"
+
 CallStatus = Literal[
     "confirmada",  # cédula coincide, confirmó condiciones y dijo "acepto"
     "revision",  # dijo que no, o la cédula no coincide: la oficina decide

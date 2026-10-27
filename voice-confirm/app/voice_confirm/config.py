@@ -50,6 +50,7 @@ class Settings:
     max_call_duration_s: int
     dispatcher_port: int
     internal_token: str
+    livekit_public_url: str  # para el simulador del navegador; vacío = wss://<dominio de la página>
 
     @staticmethod
     def agent_name_from_env() -> str:
@@ -70,6 +71,7 @@ class Settings:
             max_call_duration_s=int(_opt("MAX_CALL_DURATION_S", "300")),
             dispatcher_port=int(_opt("DISPATCHER_PORT", "8088")),
             internal_token=_req("INTERNAL_TOKEN"),
+            livekit_public_url=_opt("LIVEKIT_PUBLIC_URL"),
         )
 
 
@@ -123,7 +125,7 @@ class AgentModels:
 class DeliverySettings:
     """A dónde van el resultado y la grabación cuando termina la llamada."""
 
-    n8n_webhook_url: str
+    n8n_webhook_url: str  # vacío = el resultado queda solo en el VPS (útil para probar sin n8n)
     n8n_webhook_secret: str
     bunny_storage_zone: str
     bunny_storage_key: str
@@ -139,7 +141,7 @@ class DeliverySettings:
     @classmethod
     def load(cls) -> DeliverySettings:
         return cls(
-            n8n_webhook_url=_req("N8N_RESULT_WEBHOOK_URL"),
+            n8n_webhook_url=_opt("N8N_RESULT_WEBHOOK_URL"),
             n8n_webhook_secret=_req("N8N_WEBHOOK_SECRET"),
             bunny_storage_zone=_opt("BUNNY_STORAGE_ZONE"),
             bunny_storage_key=_opt("BUNNY_STORAGE_PASSWORD"),
@@ -152,6 +154,14 @@ class DeliverySettings:
 
 def dispatcher_token() -> str:
     return _req("DISPATCHER_TOKEN")
+
+
+ZADARMA_VARS = ("ZADARMA_SIP_USER", "ZADARMA_SIP_PASSWORD", "ZADARMA_CALLER_NUMBER")
+
+
+def zadarma_configured() -> bool:
+    """Sin Zadarma el servicio solo hace llamadas simuladas desde el navegador (/prueba)."""
+    return all(_opt(name) for name in ZADARMA_VARS)
 
 
 @dataclass(frozen=True)

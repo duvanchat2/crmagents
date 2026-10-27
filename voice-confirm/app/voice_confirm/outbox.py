@@ -7,6 +7,9 @@
   delivery.json   intentos de entrega a n8n
   delivered.json  marca de entregado: con esto la llamada queda cerrada
 
+Las llamadas simuladas desde el navegador (/prueba) usan la misma carpeta y llegan a n8n
+con "simulacion": true.
+
 Usar archivos (y no memoria) hace que un reinicio del contenedor no pierda resultados.
 """
 
@@ -72,6 +75,7 @@ def build_payload(
     sale = request.get("sale", {})
     return {
         "evento": "confirmacion_llamada",
+        "simulacion": bool(request.get("simulacion", False)),
         "call_id": call_id,
         "venta_id": sale.get("venta_id"),
         "telefono": sale.get("telefono"),
@@ -131,6 +135,11 @@ async def deliver(directory: Path, settings: DeliverySettings, client: httpx.Asy
         else:
             recording = {"almacen": "vps", "ruta": str(audio)}
         write_json_atomic(directory / "recording.json", recording)
+
+    if not settings.n8n_webhook_url:
+        # Sin webhook configurado (p. ej. probando antes de conectar n8n): queda solo en el VPS.
+        write_json_atomic(directory / "delivered.json", {"entregado": utcnow().isoformat(), "n8n": False})
+        return True
 
     # JSON compacto: es lo mismo que produce JSON.stringify en n8n, así la firma se puede verificar ahí.
     payload = build_payload(call_id, request, result, recording)

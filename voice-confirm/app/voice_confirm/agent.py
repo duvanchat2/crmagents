@@ -7,11 +7,15 @@ Flujo de cada llamada (un "job" por sala):
 4. Si es una persona, dice el saludo fijo y el modelo sigue el guion con 4 herramientas.
 5. Al colgar, copia la grabación y escribe result.json; el dispatcher entrega a n8n.
 
+En una simulación (metadata "simulacion": true) no se marca: el "cliente" entra a la sala desde
+el navegador (/prueba del dispatcher) y el resto del flujo es idéntico.
+
 Ejecutar:  python -m voice_confirm.agent start
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import shutil
@@ -21,7 +25,7 @@ from typing import Any
 
 import httpx
 from google.protobuf.duration_pb2 import Duration
-from livekit import api
+from livekit import api, rtc
 from livekit.agents import (
     AMD,
     Agent,
@@ -39,6 +43,7 @@ from livekit.plugins import assemblyai, silero
 
 from .config import AgentModels, Settings
 from .domain import (
+    CLIENT_IDENTITY,
     GOODBYE_REVIEW,
     CallStatus,
     Sale,
@@ -52,8 +57,9 @@ from .outbox import call_dir, utcnow, write_json_atomic
 
 logger = logging.getLogger("genix.confirmacion")
 
-CLIENT_IDENTITY = "cliente"
 _trunk_cache: dict[str, str] = {}
+SIM_JOIN_TIMEOUT_S = 120  # tiempo para que el navegador entre a la sala
+SIM_MIC_TIMEOUT_S = 10  # tiempo para que el navegador publique el micrófono
 
 
 @dataclass
@@ -67,6 +73,7 @@ class CallState:
     motivo_fin: str | None = None
     status_override: CallStatus | None = None
     contestada: datetime | None = None
+    simulacion: bool = False
 
 
 async def hangup() -> None:
@@ -213,6 +220,54 @@ def transcript(session: AgentSession | None) -> list[dict[str, str]]:
     return lines
 
 
+async def wait_for_microphone(room: rtc.Room, identity: str, timeout: float) -> None:
+    """Espera a que el navegador publique su micrófono: así el saludo no se pierde mientras conecta."""
+    participant = room.remote_participants.get(identity)
+    if participant and any(p.kind == rtc.TrackKind.KIND_AUDIO for p in participant.track_publications.values()):
+        return
+    published: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+
+    def on_published(publication: rtc.RemoteTrackPublication, p: rtc.RemoteParticipant) -> None:
+        if p.identity == identity and publication.kind == rtc.TrackKind.KIND_AUDIO and not published.done():
+            published.set_result(None)
+
+    room.on("track_published", on_published)
+    try:
+        await asyncio.wait_for(published, timeout)
+    except asyncio.TimeoutError:
+        logger.warning("el navegador no publicó el micrófono a tiempo; se saluda igual")
+    finally:
+        room.off("track_published", on_published)
+
+
+async def answer_simulation(ctx: JobContext, settings: Settings, state: CallState) -> bool:
+    """Simulación: en vez de marcar, espera al "cliente" del navegador. False si nunca entró."""
+    try:
+        await asyncio.wait_for(ctx.wait_for_participant(identity=CLIENT_IDENTITY), SIM_JOIN_TIMEOUT_S)
+    except asyncio.TimeoutError:
+        state.status_override = "no_contesta"
+        state.motivo_fin = "simulacion_sin_participante"
+        ctx.shutdown(reason=state.motivo_fin)
+        return False
+    await wait_for_microphone(ctx.room, CLIENT_IDENTITY, SIM_MIC_TIMEOUT_S)
+    await asyncio.sleep(0.5)  # margen para que el navegador termine de suscribirse al audio del agente
+    state.contestada = utcnow()
+
+    # En una llamada real el límite lo pone max_call_duration del SIP; aquí se cuelga a mano.
+    async def limit_duration() -> None:
+        await asyncio.sleep(settings.max_call_duration_s)
+        state.motivo_fin = state.motivo_fin or "duracion_maxima"
+        await hangup()
+
+    limiter = asyncio.create_task(limit_duration())
+
+    async def cancel_limiter() -> None:
+        limiter.cancel()
+
+    ctx.add_shutdown_callback(cancel_limiter)
+    return True
+
+
 def prewarm(proc: JobProcess) -> None:
     proc.userdata["vad"] = silero.VAD.load()
 
@@ -228,7 +283,7 @@ async def entrypoint(ctx: JobContext) -> None:
     payload = json.loads(ctx.job.metadata or "{}")
     sale = Sale.from_dict(payload["sale"])
     call_id = ctx.room.name
-    state = CallState()
+    state = CallState(simulacion=bool(payload.get("simulacion", False)))
     holder: dict[str, AgentSession] = {}
 
     async def on_shutdown(reason: str) -> None:
@@ -237,14 +292,16 @@ async def entrypoint(ctx: JobContext) -> None:
     ctx.add_shutdown_callback(on_shutdown)
     await ctx.connect()
 
-    try:
-        trunk_id = await resolve_trunk_id(ctx.api, settings.trunk_name)
-    except Exception:
-        logger.exception("no se encontró la troncal SIP")
-        state.status_override = "fallida"
-        state.motivo_fin = "sin_troncal_sip"
-        ctx.shutdown(reason="sin_troncal_sip")
-        return
+    trunk_id = ""
+    if not state.simulacion:
+        try:
+            trunk_id = await resolve_trunk_id(ctx.api, settings.trunk_name)
+        except Exception:
+            logger.exception("no se encontró la troncal SIP")
+            state.status_override = "fallida"
+            state.motivo_fin = "sin_troncal_sip"
+            ctx.shutdown(reason="sin_troncal_sip")
+            return
 
     session: AgentSession = AgentSession(
         stt=build_stt(models),
@@ -266,6 +323,11 @@ async def entrypoint(ctx: JobContext) -> None:
         # Sin LiveKit Cloud no se sube a ningún lado: finalize() lo copia a DATA_DIR.
         record={"audio": True, "traces": False, "logs": False, "transcript": False},
     )
+
+    if state.simulacion:
+        if await answer_simulation(ctx, settings, state):
+            await session.say(greeting_text(), allow_interruptions=False)
+        return
 
     try:
         async with AMD(
@@ -351,13 +413,17 @@ async def finalize(
             "confirma_condiciones": state.confirma_condiciones,
             "dijo_acepto": state.dijo_acepto,
             "frase_aceptacion": state.frase_aceptacion,
+            "simulacion": state.simulacion,
             "motivo_fin": state.motivo_fin or reason,
             "contestada": state.contestada.isoformat() if state.contestada else None,
             "finalizada": utcnow().isoformat(),
             "transcripcion": transcript(session),
         },
     )
-    logger.info("llamada finalizada", extra={"call_id": call_id, "estado": estado, "venta_id": sale.venta_id})
+    logger.info(
+        "llamada finalizada",
+        extra={"call_id": call_id, "estado": estado, "venta_id": sale.venta_id, "simulacion": state.simulacion},
+    )
 
     try:
         async with httpx.AsyncClient(timeout=3.0) as client:

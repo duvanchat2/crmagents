@@ -38,6 +38,10 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         "N8N_WEBHOOK_SECRET": "secreto",
         "DATA_DIR": str(tmp_path),
         "COLOMBIA_HOLIDAYS": "",
+        "ZADARMA_SIP_USER": "123456-100",
+        "ZADARMA_SIP_PASSWORD": "clave",
+        "ZADARMA_CALLER_NUMBER": "+576012345678",
+        "LIVEKIT_PUBLIC_URL": "",
     }
     for key, value in env.items():
         monkeypatch.setenv(key, value)
@@ -104,7 +108,95 @@ def test_invalid_payload(client: TestClient) -> None:
 
 
 def test_healthz(client: TestClient) -> None:
-    assert client.get("/healthz").json() == {"ok": True, "livekit": True, "troncal_sip": True}
+    assert client.get("/healthz").json() == {"ok": True, "livekit": True, "troncal_sip": True, "zadarma": True}
+
+
+def without_zadarma(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ZADARMA_SIP_USER", "REEMPLAZA_EXTENSION_ZADARMA")
+    client.fake_lk.sip.list_outbound_trunk.return_value = SimpleNamespace(items=[])  # type: ignore[attr-defined]
+
+
+def test_without_zadarma_only_simulations(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    without_zadarma(client, monkeypatch)
+    resp = client.post("/v1/calls", json=SALE, headers=auth())
+    assert resp.status_code == 503
+    assert resp.json()["detail"]["error"] == "sin_zadarma"
+    client.fake_lk.agent_dispatch.create_dispatch.assert_not_called()  # type: ignore[attr-defined]
+    # Sano para simular aunque no haya troncal.
+    assert client.get("/healthz").json() == {"ok": True, "livekit": True, "troncal_sip": False, "zadarma": False}
+    sim = {k: v for k, v in SALE.items() if k != "telefono"}
+    assert client.post("/v1/simulaciones", json=sim, headers=auth()).status_code == 202
+
+
+def test_simulation_dispatches_agent_and_returns_browser_token(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Domingo: una llamada real se rechazaría, pero la simulación no llama a nadie.
+    monkeypatch.setattr(dispatcher, "utcnow", lambda: datetime(2026, 11, 1, 22, 0, tzinfo=BOGOTA))
+    sim = {k: v for k, v in SALE.items() if k != "telefono"}
+    assert client.post("/v1/simulaciones", json=sim).status_code == 401
+
+    resp = client.post("/v1/simulaciones", json=sim, headers=auth())
+    assert resp.status_code == 202, resp.text
+    body = resp.json()
+    call_id = body["call_id"]
+    assert call_id.startswith("sim-GX-000123-")
+    assert body["estado"] == "esperando"
+    assert body["livekit_url"] is None  # la página usa wss://<su propio dominio>
+
+    claims = dispatcher.api.TokenVerifier("k", "s").verify(body["token"])
+    assert claims.identity == "cliente"
+    assert claims.name == "Carlos Pérez"
+    assert claims.video.room == call_id
+    assert claims.video.room_join is True
+    assert claims.video.can_publish_sources == ["microphone"]
+
+    req = client.fake_lk.agent_dispatch.create_dispatch.call_args.args[0]  # type: ignore[attr-defined]
+    assert req.room == call_id
+    assert '"simulacion": true' in req.metadata
+    stored = read_json(client.data_dir / "calls" / call_id / "request.json")  # type: ignore[attr-defined]
+    assert stored["simulacion"] is True
+    assert stored["sale"]["telefono"] == "+573000000000"
+
+    status = client.get(f"/v1/calls/{call_id}", headers=auth()).json()
+    assert status["simulacion"] is True
+    assert status["estado"] == "en_curso"
+    assert status["resultado"] is None
+
+
+def test_call_result_and_recording(client: TestClient) -> None:
+    sim = {k: v for k, v in SALE.items() if k != "telefono"}
+    call_id = client.post("/v1/simulaciones", json=sim, headers=auth()).json()["call_id"]
+    directory = client.data_dir / "calls" / call_id  # type: ignore[attr-defined]
+    assert client.get(f"/v1/calls/{call_id}/audio", headers=auth()).status_code == 404
+
+    write_json_atomic(
+        directory / "result.json",
+        {"estado": "confirmada", "cedula_coincide": True, "transcripcion": [{"rol": "cliente", "texto": "acepto"}]},
+    )
+    (directory / "audio.ogg").write_bytes(b"OggS-fake-audio")
+
+    status = client.get(f"/v1/calls/{call_id}", headers=auth()).json()
+    assert status["estado"] == "confirmada"
+    assert status["grabacion"] is True
+    assert status["resultado"]["transcripcion"][0]["texto"] == "acepto"
+
+    assert client.get(f"/v1/calls/{call_id}/audio").status_code == 401
+    audio = client.get(f"/v1/calls/{call_id}/audio", headers=auth())
+    assert audio.status_code == 200
+    assert audio.headers["content-type"] == "audio/ogg"
+    assert audio.content == b"OggS-fake-audio"
+    assert client.get("/v1/calls/no-existe/audio", headers=auth()).status_code == 404
+
+
+def test_simulator_page(client: TestClient) -> None:
+    resp = client.get("/prueba")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/html")
+    html = resp.text
+    assert "/v1/simulaciones" in html
+    assert 'livekit-client@2.22.3/dist/livekit-client.umd.js"' in html
+    assert 'integrity="sha384-' in html
 
 
 def test_internal_done_delivers(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:

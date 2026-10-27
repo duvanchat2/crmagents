@@ -219,3 +219,42 @@ hay partes que solo se confirman con el VPS, Zadarma y las cuentas reales:
 3. El nombre exacto del modelo en OpenRouter (`LLM_MODEL`) y que acepte `LLM_REASONING=off`.
 4. La voz elegida en Fish Audio y que AssemblyAI entienda bien las cédulas dictadas.
 5. La demora entre que el cliente habla y el agente responde (debe ser menor a 1,5 s).
+
+## Probar sin Zadarma (simulación desde el navegador)
+
+Sin las variables `ZADARMA_*`, el servicio queda en **modo simulación**. En ese modo:
+
+- `POST /v1/calls` responde `503 sin_zadarma`.
+- Solo funciona la página `https://<dominio>/prueba`.
+
+En esa página usted hace de cliente desde el celular o el computador. Habla con el mismo agente, que sigue el mismo guion, y la llamada se graba y se evalúa igual que una real.
+
+El resultado llega a n8n con `"simulacion": true`, así que n8n no debe activar el curso. `N8N_RESULT_WEBHOOK_URL` es opcional: si está vacío, el resultado queda solo en el VPS.
+
+El navegador exige HTTPS para usar el micrófono. Hay dos formas de tenerlo:
+
+- **Con Caddy** (80/443 libres): ponga `DISPATCHER_DOMAIN`. Sirve un dominio gratuito con la IP del VPS: `<ip-con-guiones>.sslip.io`.
+- **Con un nginx que ya ocupa 80/443**: en un `server` para un subdominio, agregue:
+
+```nginx
+location /internal/ { return 404; }
+location /rtc {
+    proxy_pass http://127.0.0.1:7880;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_read_timeout 3600s;
+}
+location / { proxy_pass http://127.0.0.1:8088; proxy_set_header Host $host; }
+```
+
+Si `DISPATCHER_HOST` es la IP del puente de Docker (por ejemplo `172.17.0.1`, para que n8n en Docker lo alcance), use esa IP en el último `proxy_pass`.
+
+En el firewall del proveedor, abra **7881/tcp y 50000-50100/udp**: por ahí pasa el audio del navegador.
+
+Lo demás no necesita estar abierto a Internet:
+
+- La API de LiveKit (7880) escucha solo en 127.0.0.1.
+- Redis también escucha solo en 127.0.0.1, en `REDIS_PORT` (6380 por defecto).
+
+El token se escribe en la página. `./scripts/sim-link.sh` imprime un enlace que ya lo trae; córralo usted, no el agente.
